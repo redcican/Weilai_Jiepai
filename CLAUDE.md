@@ -10,14 +10,16 @@ The project is written in Chinese-context railway domain. Key domain terms: 股�
 
 ## Repository Layout
 
-Three independent modules at the root, each with its own dependencies:
+Independent modules at the root, each with its own dependencies:
 
 | Module | Purpose |
 |--------|---------|
 | `OCR/` | Standalone table OCR extractor using PaddleOCR (multi-engine: paddle, tesseract, easyocr) |
 | `OCR_CnOCR/` | CnOCR-based table extractor (ONNX backend, lighter weight, optimized for Chinese) |
+| `train_id_ocr/` | Station-entry train ID recognition — extracts vehicle type + number from dark camera images |
 | `dms_api/` | FastAPI gateway — REST API with local OCR + upstream DMS backend proxy |
 | `API_test/` | DMS backend API documentation (DMS_API.docx) |
+| `进站_OCR/` | Sample images + ground truth for train ID recognition |
 
 ## Build & Run Commands
 
@@ -107,6 +109,17 @@ Both `OCR/table_ocr_solution.py` and `OCR_CnOCR/table_ocr_cnocr.py` follow the s
 3. Only extract rows starting with sequence numbers; skip headers and malformed rows
 
 The OCR module inside `dms_api/app/ocr/` reuses the CnOCR approach but is adapted for in-process use (accepts bytes, singleton engine).
+
+## Architecture: train_id_ocr
+
+Recognizes vehicle type (C64K, C70E, etc.) and vehicle number from dark station-entry camera images. Different from the table OCR modules — these are photos of stenciled text on freight car bodies, not document tables.
+
+Pipeline: 4-pass preprocessing (CLAHE, GrayCLAHE, Gamma+CLAHE, Crop+CLAHE) → CnOCR → noise filtering → line grouping → vehicle type/number extraction → majority voting for number consensus.
+
+```bash
+cd train_id_ocr
+python train_id_ocr.py ../进站_OCR -o ./output
+```
 
 ## Conda Environment
 

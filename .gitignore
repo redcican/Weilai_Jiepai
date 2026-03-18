@@ -34,5 +34,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Large image files
+*.bmp
+
 # Claude Code
 .claude/

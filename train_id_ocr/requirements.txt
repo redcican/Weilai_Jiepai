@@ -1,0 +1,12 @@
+# OCR engine
+cnocr>=2.2.0
+onnxruntime>=1.16.0
+
+# Detection model backend (db_resnet18 requires pytorch)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Image processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
