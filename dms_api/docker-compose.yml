@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  # ===== DMS API Gateway =====
+  dms-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: dms-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      # Application
+      - DMS_APP_NAME=DMS API Gateway
+      - DMS_ENVIRONMENT=production
+      - DMS_DEBUG=false
+
+      # DMS Backend
+      - DMS_DMS_BASE_URL=http://123.127.38.120:2010
+
+      # Timeouts
+      - DMS_DMS_TIMEOUT_CONNECT=5.0
+      - DMS_DMS_TIMEOUT_READ=30.0
+      - DMS_DMS_MAX_RETRIES=3
+
+      # Circuit Breaker
+      - DMS_CIRCUIT_BREAKER_ENABLED=true
+      - DMS_CIRCUIT_BREAKER_THRESHOLD=5
+      - DMS_CIRCUIT_BREAKER_TIMEOUT=30.0
+
+      # Security (optional)
+      - DMS_API_KEY_ENABLED=false
+      # - DMS_API_KEYS=key1,key2,key3
+
+      # Rate Limiting (optional)
+      - DMS_RATE_LIMIT_ENABLED=false
+      # - DMS_RATE_LIMIT_REQUESTS=100
+      # - DMS_RATE_LIMIT_WINDOW=60
+
+      # Logging
+      - DMS_LOG_LEVEL=INFO
+      - DMS_LOG_FORMAT=json
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health/live', timeout=5).raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  # ===== Development Environment =====
+  dms-api-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: dms-api-dev
+    ports:
+      - "8001:8000"
+    environment:
+      - DMS_ENVIRONMENT=development
+      - DMS_DEBUG=true
+      - DMS_DMS_BASE_URL=http://123.127.38.120:2010
+      - DMS_LOG_LEVEL=DEBUG
+      - DMS_LOG_FORMAT=text
+    volumes:
+      - ./app:/app/app:ro
+    profiles:
+      - dev
+    restart: unless-stopped
+
+networks:
+  default:
+    name: dms-network
