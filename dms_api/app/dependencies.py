@@ -13,6 +13,7 @@ from .services.abnormal import AbnormalService
 from .services.container import ContainerService
 from .services.signal import SignalService
 from .services.ticket import TicketService
+from .services.train_id import TrainIDService, get_train_id_service_singleton
 
 
 # Settings dependency
@@ -64,6 +65,15 @@ AbnormalServiceDep = Annotated[AbnormalService, Depends(get_abnormal_service)]
 ContainerServiceDep = Annotated[ContainerService, Depends(get_container_service)]
 SignalServiceDep = Annotated[SignalService, Depends(get_signal_service)]
 TicketServiceDep = Annotated[TicketService, Depends(get_ticket_service)]
+
+
+# Train ID service (standalone — no repository needed)
+async def get_train_id_service() -> TrainIDService:
+    """Get train ID service instance."""
+    return get_train_id_service_singleton()
+
+
+TrainIDServiceDep = Annotated[TrainIDService, Depends(get_train_id_service)]
 
 
 # Request ID dependency

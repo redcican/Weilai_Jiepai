@@ -27,6 +27,12 @@ from .ticket import (
     TicketData,
     TicketParseResponse,
 )
+from .train_id import (
+    TrainIDData,
+    TrainIDResponse,
+    TrainIDBatchItem,
+    TrainIDBatchResponse,
+)
 
 __all__ = [
     # Base
@@ -54,4 +60,9 @@ __all__ = [
     "TicketParseRequest",
     "TicketData",
     "TicketParseResponse",
+    # Train ID
+    "TrainIDData",
+    "TrainIDResponse",
+    "TrainIDBatchItem",
+    "TrainIDBatchResponse",
 ]

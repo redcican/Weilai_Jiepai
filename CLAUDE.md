@@ -84,6 +84,7 @@ Request → Middleware → API Router → Service → Repository (httpx) → DMS
 - **Services** (`app/services/`): Business logic. Each service takes a `DMSRepository` via constructor injection.
 - **Repository** (`app/repositories/dms.py`): Single `DMSRepository` class wrapping httpx `AsyncClient`. Implements retry with exponential backoff and a circuit breaker. This is the only place that talks to the upstream DMS backend.
 - **OCR** (`app/ocr/`): `CnOCREngine` (singleton, ONNX backend) → `TableOCRProcessor` → `OCRService`. Used by `TicketService` for local ticket parsing; falls back to DMS backend on failure.
+- **Train ID** (`app/train_id/`): `TrainIDEngine` (singleton, hybrid db_resnet18 + ch_PP-OCRv3_det) → `TrainIDService`. Standalone module for station-entry vehicle recognition (车种/车号).
 - **Schemas** (`app/schemas/`): Pydantic v2 models. Responses extend `ResponseSchema[T]` from `base.py`. Use `serialize_by_alias=True` for camelCase output.
 - **Config** (`app/config.py`): Pydantic Settings with `DMS_` env prefix. All config via environment variables.
 
@@ -93,7 +94,7 @@ All wiring is in `app/dependencies.py`. Services get `DMSRepository` via `get_re
 
 ### Key Config Env Vars
 
-All prefixed with `DMS_`. Critical ones: `DMS_DMS_BASE_URL` (upstream backend), `DMS_OCR_ENABLED`, `DMS_OCR_FALLBACK_TO_DMS`, `DMS_CIRCUIT_BREAKER_ENABLED`.
+All prefixed with `DMS_`. Critical ones: `DMS_DMS_BASE_URL` (upstream backend), `DMS_OCR_ENABLED`, `DMS_OCR_FALLBACK_TO_DMS`, `DMS_CIRCUIT_BREAKER_ENABLED`, `DMS_TRAIN_ID_OCR_ENABLED`.
 
 ### Testing
 

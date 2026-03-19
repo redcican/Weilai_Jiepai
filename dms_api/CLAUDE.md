@@ -59,6 +59,19 @@ The ticket service uses local OCR by default and falls back to DMS backend if OC
 - `DMS_OCR_ENHANCE_IMAGE`: Apply image enhancement before OCR (default: true)
 - `DMS_OCR_FALLBACK_TO_DMS`: Fallback to DMS backend on OCR failure (default: true)
 
+### Train ID Recognition
+
+The train ID module (`app/train_id/`) recognizes vehicle type and number from station-entry camera images:
+
+- **TrainIDEngine** (`engine.py`): Singleton hybrid CnOCR engine (db_resnet18 + ch_PP-OCRv3_det) with 4-pass preprocessing pipeline
+- **TrainIDService** (`services/train_id.py`): High-level service, standalone (no DMS backend dependency)
+- **Schemas** (`schemas/train_id.py`): TrainIDData, TrainIDResponse, TrainIDBatchResponse
+
+The engine accepts raw image bytes, resizes (0.25 scale), runs 4 preprocessing variants (bilateral+CLAHE, CLAHE, gamma+CLAHE x2), and merges via majority voting. Configuration:
+- `DMS_TRAIN_ID_OCR_ENABLED`: Enable/disable train ID recognition (default: true)
+
+To mock in tests, override `get_train_id_service` from `app.dependencies`.
+
 ### API Endpoints
 
 All business endpoints are under `/api/v1/`:
@@ -67,6 +80,8 @@ All business endpoints are under `/api/v1/`:
 - `POST /api/v1/container` - Container identification with photo
 - `POST /api/v1/signal/change` - Signal light changes with photo
 - `POST /api/v1/ticket/parse` - OCR ticket parsing (uses local OCR)
+- `POST /api/v1/train-id/recognize` - Single image train ID recognition
+- `POST /api/v1/train-id/recognize/batch` - Batch train ID recognition
 
 Health endpoints: `/health`, `/health/live`, `/health/ready`, `/health/detailed`
 
@@ -87,5 +102,7 @@ The OCR engine requires:
 - `onnxruntime>=1.16.0` - ONNX inference runtime
 - `Pillow>=10.0.0` - Image processing
 - `numpy>=1.24.0` - Array operations
+- `opencv-python>=4.8.0` - Image preprocessing (train ID)
+- `torch>=2.0.0` + `torchvision>=0.15.0` - db_resnet18 detection model (train ID)
 
-Models are downloaded automatically on first use (~200MB for densenet_lite_136-gru + ch_PP-OCRv3_det).
+Models are downloaded automatically on first use (~200MB for densenet_lite_136-gru + ch_PP-OCRv3_det + db_resnet18).

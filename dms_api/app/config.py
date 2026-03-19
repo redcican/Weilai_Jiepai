@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     ocr_enhance_image: bool = Field(default=True, description="Enhance images before OCR")
     ocr_fallback_to_dms: bool = Field(default=True, description="Fallback to DMS backend if OCR fails")
 
+    # Train ID OCR Configuration
+    train_id_ocr_enabled: bool = Field(default=True, description="Enable train ID recognition")
+
     @field_validator("api_keys", mode="before")
     @classmethod
     def parse_api_keys(cls, v):

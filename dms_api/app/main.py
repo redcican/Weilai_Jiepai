@@ -75,6 +75,7 @@ Production-grade API gateway for the railway DMS (Data Management System).
 - **Container Identification**: Submit OCR-identified container information
 - **Signal Light Tracking**: Report signal light state changes
 - **Ticket OCR**: Parse grouping orders using optical character recognition
+- **Train ID Recognition**: Identify vehicle type and number from station-entry camera images
 
 ## Authentication
 
