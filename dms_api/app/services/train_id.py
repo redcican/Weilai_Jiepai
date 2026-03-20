@@ -7,7 +7,7 @@ Business logic for train identification recognition operations.
 import logging
 from typing import Optional
 
-from ..train_id import TrainIDEngine, TrainIDResult
+from ..train_id import TrainIDProcessor, TrainIDResult
 from ..schemas.train_id import TrainIDData, TrainIDBatchItem
 
 logger = logging.getLogger(__name__)
@@ -21,19 +21,19 @@ class TrainIDService:
     Does not require DMS backend — all processing is local.
     """
 
-    _engine: Optional[TrainIDEngine] = None
+    _processor: Optional[TrainIDProcessor] = None
 
     @classmethod
-    def get_engine(cls) -> TrainIDEngine:
-        """Get singleton engine instance."""
-        if cls._engine is None:
-            cls._engine = TrainIDEngine.get_instance()
-        return cls._engine
+    def get_processor(cls) -> TrainIDProcessor:
+        """Get singleton processor instance."""
+        if cls._processor is None:
+            cls._processor = TrainIDProcessor()
+        return cls._processor
 
     @property
     def available(self) -> bool:
         """Check if train ID engine is available."""
-        return self.get_engine().available
+        return self.get_processor().available
 
     async def recognize_image(
         self,
@@ -50,15 +50,15 @@ class TrainIDService:
         Returns:
             TrainIDData with extracted vehicle information
         """
-        engine = self.get_engine()
+        processor = self.get_processor()
 
-        if not engine.available:
+        if not processor.available:
             logger.error("Train ID engine not available")
             return TrainIDData()
 
         logger.info(f"Processing train ID image: {filename}, size={len(image_bytes)} bytes")
 
-        result = engine.recognize_bytes(image_bytes)
+        result = processor.process_bytes(image_bytes)
 
         logger.info(
             f"Train ID result: type='{result.vehicle_type}' "

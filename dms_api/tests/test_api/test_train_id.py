@@ -201,35 +201,35 @@ class TestTrainIDUnit:
 
     def test_fix_vehicle_type_basic(self):
         """Test position-based OCR correction."""
-        from app.train_id.engine import _fix_vehicle_type
-        assert _fix_vehicle_type("C64K") == "C64K"
-        assert _fix_vehicle_type("C7OE") == "C70E"
-        assert _fix_vehicle_type("C6AK") == "C64K"
+        from app.train_id.utils import fix_vehicle_type
+        assert fix_vehicle_type("C64K") == "C64K"
+        assert fix_vehicle_type("C7OE") == "C70E"
+        assert fix_vehicle_type("C6AK") == "C64K"
 
     def test_fix_vehicle_type_no_hardcode(self):
         """Verify no hardcoded string replacements — works on any pattern."""
-        from app.train_id.engine import _fix_vehicle_type
-        assert _fix_vehicle_type("NX7O") == "NX70"
-        assert _fix_vehicle_type("P6SK") == "P65K"
+        from app.train_id.utils import fix_vehicle_type
+        assert fix_vehicle_type("NX7O") == "NX70"
+        assert fix_vehicle_type("P6SK") == "P65K"
 
     def test_fix_vehicle_number(self):
         """Test digit cleaning."""
-        from app.train_id.engine import _fix_vehicle_number
-        assert _fix_vehicle_number("49 3l846") == "49 31846"
-        assert _fix_vehicle_number("l6O l7O7") == "160 1707"
+        from app.train_id.utils import fix_vehicle_number
+        assert fix_vehicle_number("49 3l846") == "49 31846"
+        assert fix_vehicle_number("l6O l7O7") == "160 1707"
 
     def test_is_vehicle_type_pattern(self):
         """Test type pattern detection with garbled-number rejection."""
-        from app.train_id.engine import _is_vehicle_type_pattern
-        assert _is_vehicle_type_pattern("C64K") is True
-        assert _is_vehicle_type_pattern("C70E") is True
-        assert _is_vehicle_type_pattern("12345") is False
+        from app.train_id.utils import is_vehicle_type_pattern
+        assert is_vehicle_type_pattern("C64K") is True
+        assert is_vehicle_type_pattern("C70E") is True
+        assert is_vehicle_type_pattern("12345") is False
         # Garbled numbers rejected
-        assert _is_vehicle_type_pattern("O7TO") is False
+        assert is_vehicle_type_pattern("O7TO") is False
 
     def test_pick_best_type_majority(self):
         """Test majority voting for types."""
-        from app.train_id.engine import _pick_best_type
+        from app.train_id.processor import _pick_best_type
         from app.train_id.models import TrainIDResult
         candidates = [
             TrainIDResult(vehicle_type="C64K"),
@@ -241,7 +241,7 @@ class TestTrainIDUnit:
 
     def test_pick_best_number_superset(self):
         """Test superset-aware number voting."""
-        from app.train_id.engine import _pick_best_number
+        from app.train_id.processor import _pick_best_number
         from app.train_id.models import TrainIDResult
         candidates = [
             TrainIDResult(vehicle_number="160 170"),
