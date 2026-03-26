@@ -21,8 +21,9 @@ class OCRResult:
     """Complete OCR extraction result."""
     status: str
     message: str
+    table_type: int = 0
     metadata: Dict[str, str] = field(default_factory=dict)
-    table_data: List[List[str]] = field(default_factory=list)
+    table_data: List[Any] = field(default_factory=list)
 
     @property
     def is_success(self) -> bool:
@@ -32,6 +33,7 @@ class OCRResult:
         return {
             "status": self.status,
             "message": self.message,
+            "table_type": self.table_type,
             "metadata": self.metadata,
             "table_data": self.table_data,
         }

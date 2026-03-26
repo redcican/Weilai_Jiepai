@@ -2,6 +2,7 @@
 Ticket Parsing API Endpoints
 
 Endpoints for OCR ticket parsing operations.
+Returns raw table data with table_type — no column-name mapping.
 """
 
 from fastapi import APIRouter, UploadFile, File, status
@@ -19,19 +20,17 @@ router = APIRouter(prefix="/ticket", tags=["Ticket OCR"])
     status_code=status.HTTP_200_OK,
     summary="Parse ticket with OCR",
     description="""
-    Parse a grouping order (编组单) ticket using OCR.
+    Parse a grouping order (编组单) or station car list (站存车打印) using OCR.
 
-    Supported file formats:
-    - Images: JPEG, PNG, BMP, GIF
-    - Documents: PDF
+    Auto-detects table type:
+    - **Type 1** (站存车打印): ~16 columns, vehicle type and number in separate columns.
+      Output starts with `{"股道": "4"}` if track number is detected.
+    - **Type 2** (集装箱编组单): ~5 columns with slash vehicle/number (e.g. C70E/1805776)
+      and container numbers (e.g. TBJU3216534).
 
-    The OCR system will extract:
-    - Train information (车号, 车种)
-    - Route information (发站, 到站)
-    - Container information (集装箱1, 集装箱2)
-    - Load information (自重, 载重, 换长)
-    - Cargo details (品名, 记事)
-    - Document info (票据号, 计划序号)
+    Returns raw table data arrays — no column-name mapping.
+
+    Supported formats: JPEG, PNG, BMP, PDF
     """,
     responses={
         200: {"description": "Ticket parsed successfully"},

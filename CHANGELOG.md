@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0] - 2026-03-26
+### Features
+- **Two table type support** for OCR recognition:
+  - **Type 1** (站存车打印): ~16 columns, vehicle type/number in separate columns. Track number output as `{"股道": "4"}` first element.
+  - **Type 2** (集装箱编组单): ~5 columns with slash vehicle/number (e.g. `C70E/1805776`) and container numbers (e.g. `TBJU3216534`).
+- Auto-detection based on slash-vehicle patterns (unique to Type 2)
+- `table_type` field added to all OCR output (both standalone and API)
+- Type 2 post-processing: infer missing sequence numbers, cap at 5 columns, filter fragment rows, clean leading/trailing OCR noise
+- API output changed to raw table data arrays — no column-name mapping, `tableType` field added
+
+### Design Rationale
+- Slash-vehicle pattern (`C70E/1805776`) is the sole detection signal — container patterns alone cause false positives (Type 1 has cargo reference codes like `JHSX4535071` that resemble container numbers)
+- Type 2 MAX_COLS=5 cap removes OCR hallucinations (e.g. "车海发公司") without hardcoding specific noise strings
+- Missing sequence number inference uses position tracking (next_seq counter), with MIN_INFERRED=4 to filter fragment rows
+- API schema changed from `TicketData` (named fields) to `OCRTableData` (raw arrays) because column structure differs by type. Old `TicketData` kept for DMS backend compatibility
+
+### Files Changed
+- `OCR_CnOCR/table_ocr_cnocr.py` — standalone: added `detect_table_type()`, `_extract_type2()`, modified `extract_table_data()` to branch by type
+- `dms_api/app/ocr/utils.py` — added `detect_table_type()`, `is_page_footer()`, `extract_type2()`
+- `dms_api/app/ocr/processor.py` — rewrote `process()` with type branching, removed column mapping methods
+- `dms_api/app/ocr/models.py` — added `table_type` to `OCRResult`
+- `dms_api/app/schemas/ticket.py` — new `OCRTableData` schema, `TicketParseResponse` wraps it
+- `dms_api/app/services/ocr.py` — simplified to return `OCRResult` directly
+- `dms_api/app/services/ticket.py` — uses `OCRTableData`, both local and DMS paths
+
 ## [0.3.0] - 2026-03-19
 ### Features
 - Integrate train_id_ocr into dms_api as independent FastAPI service

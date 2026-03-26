@@ -437,9 +437,106 @@ def is_header_row(row: List[str]) -> bool:
     """判断是否为表头行"""
     if not row:
         return False
-    header_keywords = {'车号', '到站', '品名', '记事', '发站', '票据', '自重', '换长', '载重', '序号', '站存车打印'}
+    header_keywords = {
+        '车号', '到站', '品名', '记事', '发站', '票据', '自重', '换长', '载重',
+        '序号', '站存车打印', '集装箱', '箱号', '油种', '蓬布', '属性', '收货人',
+    }
     row_text = ''.join(row)
     return any(kw in row_text for kw in header_keywords)
+
+
+def is_page_footer(row: List[str]) -> bool:
+    """判断是否为页脚（如 第1页、第2页）"""
+    if not row:
+        return False
+    row_text = ''.join(row).strip()
+    return bool(re.match(r'^第\d+页$', row_text))
+
+
+# ── Container pattern for Type 2 detection ──
+_CONTAINER_RE = re.compile(r'[A-Z]{3,4}[A-Z0-9]\d{6,7}')
+_SLASH_VEHICLE_RE = re.compile(r'[A-Za-z]\w*/\d{5,}')
+
+
+def detect_table_type(ocr_results: List[OCRBox]) -> int:
+    """
+    判断表格类型:
+      Type 1 — 站存车打印 (~16列, 车种/车号分开)
+      Type 2 — 集装箱编组单 (~5列, 含集装箱号和斜杠车种/车号)
+
+    核心依据: 斜杠车种/车号 (如 C70E/1805776) 是 Type 2 的唯一特征。
+    集装箱号模式不可靠，因为 Type 1 中也有类似的货运参考号 (如 JHSX4535071)。
+    """
+    slash_vehicle_count = 0
+
+    for box in ocr_results:
+        slash_vehicle_count += len(_SLASH_VEHICLE_RE.findall(box.text))
+
+    if slash_vehicle_count >= 2:
+        return 2
+    return 1
+
+
+def _extract_type2(all_rows: List[List[str]]) -> Tuple[Dict[str, Any], List[List[str]]]:
+    """
+    Type 2 (集装箱编组单) 提取:
+    过滤表头/页脚/元数据，保留数据行，然后后处理：
+    - 截断超出预期列数的尾部噪声
+    - 推断缺失的序号
+    - 过滤碎片行
+    """
+    MAX_COLS = 5   # 序号, 车种/车号, 集装箱1, 集装箱2, 到站
+    MIN_INFERRED = 4  # 推断序号的行至少要有4个元素才保留
+
+    metadata: Dict[str, Any] = {}
+    raw_rows: List[List[str]] = []
+
+    for row in all_rows:
+        if not row:
+            continue
+        if is_header_row(row):
+            continue
+        if is_page_footer(row):
+            continue
+
+        is_meta, key, value = is_metadata_item(row)
+        if is_meta and key and value:
+            metadata[key] = value
+            continue
+
+        # 保留含集装箱号、斜杠车号、或以序号开头的行
+        row_text = ''.join(row)
+        has_container = bool(_CONTAINER_RE.search(row_text))
+        has_slash = bool(_SLASH_VEHICLE_RE.search(row_text))
+        has_seq = bool(row[0].strip()) and re.match(r'^\d{1,3}$', row[0].strip())
+
+        if has_container or has_slash or has_seq:
+            # 清理行首 OCR 噪声（如单个字母 "J"、"I" 等）
+            while len(row) > 1 and re.match(r'^[A-Za-z]$', row[0].strip()):
+                row = row[1:]
+            raw_rows.append(row)
+
+    # ── 后处理 ──
+    data_rows: List[List[str]] = []
+    next_seq = 1
+
+    for row in raw_rows:
+        first = row[0].strip()
+        has_seq = bool(re.match(r'^\d{1,3}$', first))
+
+        if has_seq:
+            next_seq = int(first) + 1
+            data_rows.append(row[:MAX_COLS])
+        else:
+            # 缺失序号 — 补全推断序号
+            row_out = [str(next_seq)] + row
+            row_out = row_out[:MAX_COLS]
+            # 碎片行过滤：推断序号的行元素太少则丢弃
+            if len(row_out) >= MIN_INFERRED:
+                next_seq += 1
+                data_rows.append(row_out)
+
+    return metadata, data_rows
 
 
 def detect_vehicle_type_column(rows: List[List[str]]) -> int:
@@ -595,21 +692,36 @@ def extract_track_number_from_first_row(rows: List[List[str]], seq_col: int) -> 
 
 
 def extract_table_data(image_path: str, engine: CnOCREngine, tolerance: int = None) -> Dict[str, Any]:
-    """从单张图片提取表格数据"""
+    """从单张图片提取表格数据，自动检测表格类型"""
     ocr_results = engine.recognize(str(image_path))
 
     if not ocr_results:
         return {
             "message": f"图片 {Path(image_path).name} OCR识别失败",
             "status": "error",
+            "table_type": 0,
             "metadata": {},
             "table data": []
         }
 
+    table_type = detect_table_type(ocr_results)
+    logger.info(f"{Path(image_path).name}: 检测为类型 {table_type}")
+
     # 聚合为行
     all_rows = aggregate_to_rows(ocr_results, tolerance)
 
-    # 分离元数据和候选数据行
+    # ── Type 2: 集装箱编组单 ──
+    if table_type == 2:
+        metadata, data_rows = _extract_type2(all_rows)
+        return {
+            "message": "识别成功",
+            "status": "success",
+            "table_type": 2,
+            "metadata": metadata,
+            "table data": data_rows
+        }
+
+    # ── Type 1: 站存车打印 ──
     metadata = {}
     candidate_rows = []
 
@@ -622,6 +734,9 @@ def extract_table_data(image_path: str, engine: CnOCREngine, tolerance: int = No
         if is_header_row(row):
             continue
 
+        if is_page_footer(row):
+            continue
+
         if len(row) >= 3:
             candidate_rows.append(row)
 
@@ -629,6 +744,7 @@ def extract_table_data(image_path: str, engine: CnOCREngine, tolerance: int = No
         return {
             "message": "识别成功",
             "status": "success",
+            "table_type": 1,
             "metadata": metadata,
             "table data": []
         }
@@ -691,11 +807,19 @@ def extract_table_data(image_path: str, engine: CnOCREngine, tolerance: int = No
         logger.debug(f"自动生成序列号")
         data_rows = [[str(i + 1)] + row for i, row in enumerate(data_rows)]
 
+    # Type 1: 股道作为table data第一个元素
+    table_data: List[Any] = []
+    track_value = metadata.pop("股道", None)
+    if track_value:
+        table_data.append({"股道": track_value})
+    table_data.extend(data_rows)
+
     return {
         "message": "识别成功",
         "status": "success",
+        "table_type": 1,
         "metadata": metadata,
-        "table data": data_rows
+        "table data": table_data
     }
 
 

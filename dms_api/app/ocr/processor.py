@@ -2,18 +2,22 @@
 Table OCR Processor
 
 Extracts structured table data from railway ticket images.
+Supports two table types:
+  Type 1 — 站存车打印 (vehicle type/number in separate columns)
+  Type 2 — 集装箱编组单 (slash vehicle/number, container numbers)
 """
 
 import re
 import logging
-from typing import Dict, Any, List, Optional, Union
+from typing import Optional, Union, List, Any
 
-from .models import OCRBox, OCRResult
+from .models import OCRResult
 from .engine import CnOCREngine
 from .utils import (
     aggregate_to_rows,
     is_metadata_item,
     is_header_row,
+    is_page_footer,
     is_valid_data_row,
     is_potential_sequence_number,
     detect_sequence_column,
@@ -21,6 +25,8 @@ from .utils import (
     detect_vehicle_id_column,
     normalize_row,
     extract_track_number_from_first_row,
+    detect_table_type,
+    extract_type2,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,6 +37,7 @@ class TableOCRProcessor:
     Processor for extracting table data from railway ticket images.
 
     Supports both file paths and image bytes as input.
+    Auto-detects table type and applies type-specific extraction.
     """
 
     def __init__(self, engine: Optional[CnOCREngine] = None, enhance_image: bool = True):
@@ -48,12 +55,11 @@ class TableOCRProcessor:
         """
         Extract table data from an image.
 
-        Args:
-            image: Image file path or image bytes
-            tolerance: Row aggregation tolerance (auto-adaptive if None)
+        Auto-detects table type and returns raw table data arrays
+        (no column-name mapping).
 
         Returns:
-            OCRResult with extracted metadata and table data
+            OCRResult with table_type, metadata, and table_data
         """
         if not self.engine.available:
             return OCRResult(
@@ -61,7 +67,6 @@ class TableOCRProcessor:
                 message="OCR engine not available",
             )
 
-        # Perform OCR
         ocr_results = self.engine.recognize(image)
 
         if not ocr_results:
@@ -70,10 +75,27 @@ class TableOCRProcessor:
                 message="OCR recognition failed or no text detected",
             )
 
-        # Aggregate results into rows
+        table_type = detect_table_type(ocr_results)
+        logger.info(f"Detected table type: {table_type}")
+
         all_rows = aggregate_to_rows(ocr_results, tolerance)
 
-        # Separate metadata and candidate data rows
+        # ── Type 2: 集装箱编组单 ──
+        if table_type == 2:
+            metadata, data_rows = extract_type2(all_rows)
+            return OCRResult(
+                status="success",
+                message="识别成功",
+                table_type=2,
+                metadata=metadata,
+                table_data=data_rows,
+            )
+
+        # ── Type 1: 站存车打印 ──
+        return self._extract_type1(all_rows)
+
+    def _extract_type1(self, all_rows: List[List[str]]) -> OCRResult:
+        """Type 1 extraction: 站存车打印 tables."""
         metadata = {}
         candidate_rows = []
 
@@ -86,13 +108,17 @@ class TableOCRProcessor:
             if is_header_row(row):
                 continue
 
+            if is_page_footer(row):
+                continue
+
             if len(row) >= 3:
                 candidate_rows.append(row)
 
         if not candidate_rows:
             return OCRResult(
                 status="success",
-                message="Recognition successful, no table data found",
+                message="识别成功",
+                table_type=1,
                 metadata=metadata,
                 table_data=[],
             )
@@ -102,7 +128,11 @@ class TableOCRProcessor:
         vehicle_type_col = detect_vehicle_type_column(candidate_rows)
         vehicle_id_col = detect_vehicle_id_column(candidate_rows)
 
-        logger.debug(f"Detection: seq_col={seq_col}, vehicle_type_col={vehicle_type_col}, vehicle_id_col={vehicle_id_col}")
+        logger.debug(
+            f"Detection: seq_col={seq_col}, "
+            f"vehicle_type_col={vehicle_type_col}, "
+            f"vehicle_id_col={vehicle_id_col}"
+        )
 
         # Filter valid data rows
         data_rows = []
@@ -155,90 +185,17 @@ class TableOCRProcessor:
             logger.debug("Auto-generating sequence numbers")
             data_rows = [[str(i + 1)] + row for i, row in enumerate(data_rows)]
 
+        # Type 1: 股道 as first element of table_data
+        table_data: List[Any] = []
+        track_value = metadata.pop("股道", None)
+        if track_value:
+            table_data.append({"股道": track_value})
+        table_data.extend(data_rows)
+
         return OCRResult(
             status="success",
-            message="Recognition successful",
+            message="识别成功",
+            table_type=1,
             metadata=metadata,
-            table_data=data_rows,
+            table_data=table_data,
         )
-
-    def process_to_ticket_data(
-        self,
-        image: Union[str, bytes],
-        tolerance: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """
-        Process image and convert to ticket data format.
-
-        Returns a dictionary matching the TicketData schema.
-        """
-        result = self.process(image, tolerance)
-
-        if not result.is_success:
-            return {
-                "error": result.message,
-                "status": result.status,
-            }
-
-        # Map OCR result to TicketData fields
-        ticket_data = self._map_to_ticket_fields(result)
-        return ticket_data
-
-    def _map_to_ticket_fields(self, result: OCRResult) -> Dict[str, Any]:
-        """
-        Map OCR result to TicketData schema fields.
-
-        Field mapping from table columns:
-        - Column 0: 序号 (seq)
-        - Column 1: 车型 (trainType)
-        - Column 2: 车号 (trainNo)
-        - Column 3: 自重 (emptyCapacity)
-        - Column 4: 换长 (changeLength)
-        - Column 5: 载重 (loadCapacity)
-        - Column 6: 集装箱1 (container1)
-        - Column 7: 集装箱2 (container2)
-        - Column 8: 发站 (startStation)
-        - Column 9: 到站 (destStation)
-        - Column 10: 品名 (carryType)
-        - Column 11: 记事 (descr)
-        """
-        metadata = result.metadata
-        table_data = result.table_data
-
-        # Start with metadata
-        ticket = {
-            "planNo": metadata.get("计划序号") or metadata.get("计划号"),
-            "stock": metadata.get("股道"),
-            "ticketNo": metadata.get("票据号") or metadata.get("票号"),
-        }
-
-        # If we have table data, extract the first row as primary data
-        if table_data and len(table_data) > 0:
-            first_row = table_data[0]
-
-            # Map columns to fields based on position
-            column_mapping = [
-                ("seq", 0),
-                ("trainType", 1),
-                ("trainNo", 2),
-                ("emptyCapacity", 3),
-                ("changeLength", 4),
-                ("loadCapacity", 5),
-                ("container1", 6),
-                ("container2", 7),
-                ("startStation", 8),
-                ("destStation", 9),
-                ("carryType", 10),
-                ("descr", 11),
-            ]
-
-            for field_name, col_idx in column_mapping:
-                if col_idx < len(first_row):
-                    value = first_row[col_idx].strip()
-                    if value:
-                        ticket[field_name] = value
-
-        # Clean up None values
-        ticket = {k: v for k, v in ticket.items() if v is not None}
-
-        return ticket

@@ -5,9 +5,14 @@ Helper functions for text correction, splitting, and row processing.
 """
 
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 from .models import OCRBox
+
+
+# ── Patterns for Type 2 (集装箱编组单) detection ──
+_CONTAINER_RE = re.compile(r'[A-Z]{3,4}[A-Z0-9]\d{6,7}')
+_SLASH_VEHICLE_RE = re.compile(r'[A-Za-z]\w*/\d{5,}')
 
 
 def enhance_image_for_ocr(image_path: str):
@@ -352,9 +357,97 @@ def is_header_row(row: List[str]) -> bool:
     """Check if row is a header row."""
     if not row:
         return False
-    header_keywords = {'车号', '到站', '品名', '记事', '发站', '票据', '自重', '换长', '载重', '序号', '站存车打印'}
+    header_keywords = {
+        '车号', '到站', '品名', '记事', '发站', '票据', '自重', '换长', '载重',
+        '序号', '站存车打印', '集装箱', '箱号', '油种', '蓬布', '属性', '收货人',
+    }
     row_text = ''.join(row)
     return any(kw in row_text for kw in header_keywords)
+
+
+def is_page_footer(row: List[str]) -> bool:
+    """Check if row is a page footer (e.g. 第1页, 第2页)."""
+    if not row:
+        return False
+    row_text = ''.join(row).strip()
+    return bool(re.match(r'^第\d+页$', row_text))
+
+
+def detect_table_type(ocr_results: List[OCRBox]) -> int:
+    """
+    Detect table type:
+      Type 1 — 站存车打印 (~16 cols, vehicle type/number in separate columns)
+      Type 2 — 集装箱编组单 (~5 cols, slash vehicle/number like C70E/1805776)
+
+    Key signal: slash-vehicle patterns are unique to Type 2.
+    Container patterns alone are unreliable (Type 1 may have cargo reference codes).
+    """
+    slash_vehicle_count = 0
+    for box in ocr_results:
+        slash_vehicle_count += len(_SLASH_VEHICLE_RE.findall(box.text))
+
+    if slash_vehicle_count >= 2:
+        return 2
+    return 1
+
+
+def extract_type2(all_rows: List[List[str]]) -> Tuple[Dict[str, Any], List[List[str]]]:
+    """
+    Type 2 (集装箱编组单) extraction:
+    Filter headers/footers/metadata, keep data rows, then post-process:
+    - Cap rows at MAX_COLS (seq, vehicle, container1, container2, station)
+    - Infer missing sequence numbers
+    - Filter fragment rows
+    """
+    MAX_COLS = 5
+    MIN_INFERRED = 4
+
+    metadata: Dict[str, Any] = {}
+    raw_rows: List[List[str]] = []
+
+    for row in all_rows:
+        if not row:
+            continue
+        if is_header_row(row):
+            continue
+        if is_page_footer(row):
+            continue
+
+        is_meta, key, value = is_metadata_item(row)
+        if is_meta and key and value:
+            metadata[key] = value
+            continue
+
+        row_text = ''.join(row)
+        has_container = bool(_CONTAINER_RE.search(row_text))
+        has_slash = bool(_SLASH_VEHICLE_RE.search(row_text))
+        has_seq = bool(row[0].strip()) and re.match(r'^\d{1,3}$', row[0].strip())
+
+        if has_container or has_slash or has_seq:
+            # Clean leading OCR noise (single letters like "J", "I")
+            while len(row) > 1 and re.match(r'^[A-Za-z]$', row[0].strip()):
+                row = row[1:]
+            raw_rows.append(row)
+
+    # Post-process: infer missing seq, cap length, filter fragments
+    data_rows: List[List[str]] = []
+    next_seq = 1
+
+    for row in raw_rows:
+        first = row[0].strip()
+        has_seq = bool(re.match(r'^\d{1,3}$', first))
+
+        if has_seq:
+            next_seq = int(first) + 1
+            data_rows.append(row[:MAX_COLS])
+        else:
+            row_out = [str(next_seq)] + row
+            row_out = row_out[:MAX_COLS]
+            if len(row_out) >= MIN_INFERRED:
+                next_seq += 1
+                data_rows.append(row_out)
+
+    return metadata, data_rows
 
 
 def detect_vehicle_type_column(rows: List[List[str]]) -> int:

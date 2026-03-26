@@ -10,7 +10,7 @@ from fastapi import UploadFile
 from .base import BaseService
 from .ocr import get_ocr_service, OCRService
 from ..repositories.dms import DMSRepository
-from ..schemas.ticket import TicketParseResponse, TicketData
+from ..schemas.ticket import TicketParseResponse, OCRTableData
 from ..core.exceptions import DMSUpstreamError, DMSFileError
 
 
@@ -38,17 +38,11 @@ class TicketService(BaseService):
         """
         Parse ticket using OCR.
 
-        Args:
-            file: Ticket image or document
-
-        Returns:
-            TicketParseResponse with parsed data
+        Returns raw table data with table_type (no column-name mapping).
         """
-        # Validate file
         if not file.filename:
             raise DMSFileError(message="Filename is required")
 
-        content_type = file.content_type or "application/octet-stream"
         file_content = await file.read()
 
         if not file_content:
@@ -56,7 +50,7 @@ class TicketService(BaseService):
 
         self._logger.info(
             f"Parsing ticket: filename={file.filename}, "
-            f"size={len(file_content)}, type={content_type}",
+            f"size={len(file_content)}",
         )
 
         # Try local OCR first
@@ -64,6 +58,7 @@ class TicketService(BaseService):
             return await self._parse_with_local_ocr(file_content, file.filename)
 
         # Fallback to DMS backend
+        content_type = file.content_type or "application/octet-stream"
         return await self._parse_with_dms_backend(
             file_content, file.filename, content_type
         )
@@ -81,9 +76,8 @@ class TicketService(BaseService):
             filename=filename,
         )
 
-        if not result.get("success"):
-            error_msg = result.get("error", "OCR processing failed")
-            self._logger.warning(f"Local OCR failed: {error_msg}")
+        if not result.is_success:
+            self._logger.warning(f"Local OCR failed: {result.message}")
 
             # Try DMS backend as fallback
             if self._repository:
@@ -92,20 +86,17 @@ class TicketService(BaseService):
                     file_content, filename, "image/jpeg"
                 )
 
-            raise DMSFileError(message=f"OCR failed: {error_msg}", filename=filename)
+            raise DMSFileError(message=f"OCR failed: {result.message}", filename=filename)
 
-        # Create list of TicketData from all OCR rows
-        ticket_list = self._ocr_service.create_ticket_data(result)
-
-        if ticket_list is None:
-            return TicketParseResponse.ok(
-                data=[],
-                message="Ticket parsed but data mapping incomplete",
-            )
+        ocr_data = OCRTableData(
+            table_type=result.table_type,
+            metadata=result.metadata,
+            table_data=result.table_data,
+        )
 
         return TicketParseResponse.ok(
-            data=ticket_list,
-            message=f"Ticket parsed successfully (local OCR), {len(ticket_list)} records",
+            data=ocr_data,
+            message=f"识别成功 (type={result.table_type}), {len(result.table_data)} rows",
         )
 
     async def _parse_with_dms_backend(
@@ -124,17 +115,15 @@ class TicketService(BaseService):
         )
 
         if result.is_success:
-            ticket_list = []
-            if result.data:
-                try:
-                    items = result.data if isinstance(result.data, list) else [result.data]
-                    for item in items:
-                        ticket_list.append(TicketData.model_validate(item))
-                except Exception as e:
-                    self._logger.warning(f"Failed to parse ticket data: {e}")
-
+            # Wrap DMS backend response as Type 1 raw data
+            table_data = result.data if isinstance(result.data, list) else [result.data] if result.data else []
+            ocr_data = OCRTableData(
+                table_type=1,
+                metadata={},
+                table_data=table_data,
+            )
             return TicketParseResponse.ok(
-                data=ticket_list,
+                data=ocr_data,
                 message=result.msg or "Ticket parsed successfully (DMS backend)",
             )
 
