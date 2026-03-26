@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0] - 2026-03-26
+### Features
+- **Batch image upload** for ticket OCR — `POST /api/v1/ticket/parse` now accepts multiple images in a single request
+  - Response wraps all results in one `data` array with `filename` per item
+  - Single `message`/`status` at top level (e.g. "识别成功, 2/2 张图片")
+- **Swagger UI multi-file select** — custom `/docs` page with JS patch so users can select multiple files in one dialog (Ctrl/Shift+Click) instead of adding items one by one
+- **UTF-8 charset fix** — middleware adds `charset=utf-8` to all JSON responses, fixing garbled Chinese in browsers
+- **OpenAPI schema patch** — converts `contentMediaType` to `format: binary` for Swagger UI 5 file upload compatibility
+
+### Design Rationale
+- Swagger UI 5 doesn't support OpenAPI 3.1's `contentMediaType` for file inputs — patching the schema to use `format: binary` is the standard workaround
+- Swagger UI only reads one file per `<input>` even with `multiple` attribute — a fetch interceptor rebuilds FormData with all selected files before the request is sent
+- `charset=utf-8` in Content-Type is needed because some browsers default to system locale encoding for `application/json` without explicit charset
+
+### Notes & Caveats
+- Custom `/docs` page replaces FastAPI's built-in Swagger UI (only in dev/debug mode)
+- The fetch interceptor is a Swagger UI workaround — programmatic clients (curl, httpx) send multiple files natively
+
 ## [0.4.0] - 2026-03-26
 ### Features
 - **Two table type support** for OCR recognition:

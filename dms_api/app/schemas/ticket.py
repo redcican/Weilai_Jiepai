@@ -46,13 +46,14 @@ class OCRTableData(BaseSchema):
         arbitrary_types_allowed=True,
     )
 
+    filename: str = Field(description="文件名")
     table_type: int = Field(alias="tableType", description="表格类型 (1=站存车, 2=集装箱编组单)")
     metadata: dict[str, str] = Field(default_factory=dict, description="元数据")
     table_data: list[Any] = Field(alias="tableData", default_factory=list, description="表格数据行")
 
 
-class TicketParseResponse(ResponseSchema[OCRTableData]):
-    """Response for ticket parsing operation."""
+class TicketParseResponse(ResponseSchema[list[OCRTableData]]):
+    """Response for batch ticket parsing operation."""
     pass
 
 

@@ -189,16 +189,42 @@ class TestTicketEndpoints:
         client: AsyncClient,
         sample_image_content: bytes,
     ):
-        """Test parsing ticket."""
+        """Test parsing ticket (batch)."""
         response = await client.post(
             "/api/v1/ticket/parse",
-            files={"file": ("ticket.jpg", sample_image_content, "image/jpeg")},
+            files=[
+                ("files", ("ticket.jpg", sample_image_content, "image/jpeg")),
+            ],
         )
         assert response.status_code == 200
 
         data = response.json()
         assert data["success"] is True
-        assert data["data"] is not None
+        assert isinstance(data["data"], list)
+        assert len(data["data"]) == 1
+        assert "filename" in data["data"][0]
+
+    async def test_parse_ticket_batch(
+        self,
+        client: AsyncClient,
+        sample_image_content: bytes,
+    ):
+        """Test parsing multiple tickets."""
+        response = await client.post(
+            "/api/v1/ticket/parse",
+            files=[
+                ("files", ("ticket1.jpg", sample_image_content, "image/jpeg")),
+                ("files", ("ticket2.jpg", sample_image_content, "image/jpeg")),
+            ],
+        )
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["success"] is True
+        assert isinstance(data["data"], list)
+        assert len(data["data"]) == 2
+        assert data["data"][0]["filename"] == "ticket1.jpg"
+        assert data["data"][1]["filename"] == "ticket2.jpg"
 
 
 @pytest.mark.asyncio
