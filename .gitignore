@@ -36,6 +36,7 @@ Thumbs.db
 
 # Large image files
 *.bmp
+train_id_OCR_figures/
 
 # Claude Code
 .claude/
