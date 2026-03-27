@@ -10,9 +10,10 @@ from typing import List, Tuple, Optional, Dict, Any
 from .models import OCRBox
 
 
-# ── Patterns for Type 2 (集装箱编组单) detection ──
+# ── Patterns for Type 2 (集装箱编组单) ──
 _CONTAINER_RE = re.compile(r'[A-Z]{3,4}[A-Z0-9]\d{6,7}')
 _SLASH_VEHICLE_RE = re.compile(r'[A-Za-z]\w*/\d{5,}')
+_CHINESE_RE = re.compile(r'[\u4e00-\u9fff]')
 
 
 def enhance_image_for_ocr(image_path: str):
@@ -391,17 +392,76 @@ def detect_table_type(ocr_results: List[OCRBox]) -> int:
     return 1
 
 
-def extract_type2(all_rows: List[List[str]]) -> Tuple[Dict[str, Any], List[List[str]]]:
+TYPE2_COLUMNS = ["序", "ID1", "ID2", "ID3", "地点"]
+
+
+def _classify_type2_row(
+    row: List[str], next_seq: int
+) -> Tuple[Optional[Dict[str, str]], int]:
+    """
+    Pattern-based classification for a Type 2 data row.
+
+    Assigns each value to a column by pattern rather than position:
+    - digits (1-3 chars) at position 0 → 序
+    - slash-vehicle (e.g., C70E/1721133) → ID1
+    - container number (e.g., TBJU3216534) → ID2, then ID3
+    - Chinese text (e.g., 漳平) → 地点
+    - Unrecognized values → skipped as noise
+
+    Returns (row_dict, updated_next_seq) or (None, updated_next_seq)
+    for fragment rows that have no meaningful data.
+    """
+    if not row:
+        return None, next_seq
+
+    first = row[0].strip()
+    has_real_seq = bool(re.match(r'^\d{1,3}$', first))
+
+    if has_real_seq:
+        seq = first
+        data_vals = row[1:]
+    elif _SLASH_VEHICLE_RE.search(first) or _CONTAINER_RE.search(first):
+        seq = str(next_seq)
+        data_vals = row
+    else:
+        seq = str(next_seq)
+        data_vals = row[1:]
+
+    id1 = ""
+    containers: List[str] = []
+    location = ""
+
+    for val in data_vals:
+        v = val.strip()
+        if not v:
+            continue
+        if _SLASH_VEHICLE_RE.search(v):
+            id1 = v
+        elif _CONTAINER_RE.search(v):
+            containers.append(v)
+        elif _CHINESE_RE.search(v):
+            location = v
+
+    if not id1 and not containers and not location:
+        return None, (int(seq) + 1 if has_real_seq else next_seq)
+
+    result = {
+        "序": seq,
+        "ID1": id1,
+        "ID2": containers[0] if len(containers) >= 1 else "",
+        "ID3": containers[1] if len(containers) >= 2 else "",
+        "地点": location,
+    }
+
+    return result, int(seq) + 1
+
+
+def extract_type2(all_rows: List[List[str]]) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """
     Type 2 (集装箱编组单) extraction:
-    Filter headers/footers/metadata, keep data rows, then post-process:
-    - Cap rows at MAX_COLS (seq, vehicle, container1, container2, station)
-    - Infer missing sequence numbers
-    - Filter fragment rows
+    Filter headers/footers/metadata, keep data rows, then classify
+    each value by pattern into the correct column.
     """
-    MAX_COLS = 5
-    MIN_INFERRED = 4
-
     metadata: Dict[str, Any] = {}
     raw_rows: List[List[str]] = []
 
@@ -424,28 +484,15 @@ def extract_type2(all_rows: List[List[str]]) -> Tuple[Dict[str, Any], List[List[
         has_seq = bool(row[0].strip()) and re.match(r'^\d{1,3}$', row[0].strip())
 
         if has_container or has_slash or has_seq:
-            # Clean leading OCR noise (single letters like "J", "I")
-            while len(row) > 1 and re.match(r'^[A-Za-z]$', row[0].strip()):
-                row = row[1:]
             raw_rows.append(row)
 
-    # Post-process: infer missing seq, cap length, filter fragments
-    data_rows: List[List[str]] = []
+    data_rows: List[Dict[str, str]] = []
     next_seq = 1
 
     for row in raw_rows:
-        first = row[0].strip()
-        has_seq = bool(re.match(r'^\d{1,3}$', first))
-
-        if has_seq:
-            next_seq = int(first) + 1
-            data_rows.append(row[:MAX_COLS])
-        else:
-            row_out = [str(next_seq)] + row
-            row_out = row_out[:MAX_COLS]
-            if len(row_out) >= MIN_INFERRED:
-                next_seq += 1
-                data_rows.append(row_out)
+        row_dict, next_seq = _classify_type2_row(row, next_seq)
+        if row_dict is not None:
+            data_rows.append(row_dict)
 
     return metadata, data_rows
 
@@ -602,3 +649,333 @@ def extract_track_number_from_first_row(
                     return track, [new_first_row] + rows[1:]
 
     return None, rows
+
+
+# ── Type 1 column definitions (站存车打印, 16 columns) ──
+TYPE1_COLUMNS = [
+    "股道", "序", "车种", "油种", "车号", "自重",
+    "换长", "载重", "到站", "品名", "记事", "发站",
+    "篷布", "票据号", "属性", "收货人",
+]
+
+# Map header text fragments → column index (longest match first)
+_HEADER_COL_MAP = {
+    "收货人": 15, "票据号": 13, "站存车打印": -1,
+    "股道": 0, "车种": 2, "油种": 3, "车号": 4,
+    "自重": 5, "换长": 6, "载重": 7, "到站": 8,
+    "品名": 9, "记事": 10, "发站": 11, "篷布": 12,
+    "蓬布": 12, "属性": 14, "序": 1, "属": 14,
+}
+
+
+def aggregate_to_box_rows(
+    ocr_results: List[OCRBox], tolerance: int = None
+) -> List[List[OCRBox]]:
+    """Group OCR boxes into rows by Y-coordinate, preserving box positions."""
+    if not ocr_results:
+        return []
+
+    def center_y(box):
+        return (box.box[1] + box.box[3]) / 2
+
+    def box_height(box):
+        return box.box[3] - box.box[1]
+
+    if tolerance is None:
+        heights = [box_height(r) for r in ocr_results if box_height(r) > 0]
+        if heights:
+            heights.sort()
+            median_height = heights[len(heights) // 2]
+            tolerance = max(10, int(median_height * 0.6))
+        else:
+            tolerance = 20
+
+    sorted_results = sorted(ocr_results, key=center_y)
+    rows: List[List[OCRBox]] = []
+    current_row: List[OCRBox] = []
+    current_y: Optional[float] = None
+
+    for result in sorted_results:
+        y = center_y(result)
+        if current_y is None:
+            current_y = y
+            current_row = [result]
+        elif abs(y - current_y) <= tolerance:
+            current_row.append(result)
+            current_y = sum(center_y(r) for r in current_row) / len(current_row)
+        else:
+            current_row.sort(key=lambda r: r.box[0])
+            rows.append(current_row)
+            current_row = [result]
+            current_y = y
+
+    if current_row:
+        current_row.sort(key=lambda r: r.box[0])
+        rows.append(current_row)
+
+    return rows
+
+
+def _is_header_box_row(box_row: List[OCRBox]) -> bool:
+    """Check if a box row is a header row (primary: >=3 keywords)."""
+    text = ''.join(b.text for b in box_row)
+    header_kw = ['车号', '到站', '品名', '自重', '换长', '载重', '记事']
+    return sum(1 for kw in header_kw if kw in text) >= 3
+
+
+def _is_secondary_header_row(box_row: List[OCRBox]) -> bool:
+    """Check if a row is a secondary header row (>=1 header keyword)."""
+    text = ''.join(b.text for b in box_row)
+    all_kw = ['股道', '序', '车种', '油种', '车号', '到站', '品名', '自重',
+              '换长', '载重', '记事', '发站', '篷布', '票据号', '属性', '收货人']
+    return sum(1 for kw in all_kw if kw in text) >= 1
+
+
+def _parse_column_centers(header_boxes: List[OCRBox]) -> Dict[int, float]:
+    """Extract column center x-positions from header boxes using proportional character mapping."""
+    col_centers: Dict[int, float] = {}
+    sorted_keys = sorted(_HEADER_COL_MAP.keys(), key=len, reverse=True)
+
+    for box in header_boxes:
+        raw_text = box.text.replace(' ', '')
+        x_left, x_right = box.box[0], box.box[2]
+        n_chars = len(raw_text)
+        if n_chars == 0:
+            continue
+        char_w = (x_right - x_left) / n_chars
+
+        pos = 0
+        while pos < n_chars:
+            matched = False
+            for key in sorted_keys:
+                klen = len(key)
+                if pos + klen <= n_chars and raw_text[pos:pos + klen] == key:
+                    col_idx = _HEADER_COL_MAP[key]
+                    if col_idx >= 0:
+                        center_x = x_left + (pos + klen / 2) * char_w
+                        col_centers[col_idx] = center_x
+                    pos += klen
+                    matched = True
+                    break
+            if not matched:
+                pos += 1
+
+    return col_centers
+
+
+def _build_column_boundaries(
+    col_centers: Dict[int, float], image_width: int
+) -> List[Tuple[float, float]]:
+    """Convert column centers to (left, right) boundary ranges."""
+    known = sorted(col_centers.items())
+    if not known:
+        return [(0, image_width)] * 16
+
+    all_centers: Dict[int, float] = dict(known)
+
+    spacings = []
+    for i in range(len(known) - 1):
+        idx_a, x_a = known[i]
+        idx_b, x_b = known[i + 1]
+        if idx_b > idx_a:
+            spacings.append((x_b - x_a) / (idx_b - idx_a))
+    avg_spacing = sum(spacings) / len(spacings) if spacings else 50.0
+
+    for i in range(16):
+        if i in all_centers:
+            continue
+        nearest_idx = min(all_centers.keys(), key=lambda k: abs(k - i))
+        all_centers[i] = all_centers[nearest_idx] + (i - nearest_idx) * avg_spacing
+
+    boundaries: List[Tuple[float, float]] = []
+    for i in range(16):
+        if i == 0:
+            left = 0.0
+        else:
+            left = (all_centers[i - 1] + all_centers[i]) / 2
+        if i == 15:
+            right = float(image_width)
+        else:
+            right = (all_centers[i] + all_centers[i + 1]) / 2
+        boundaries.append((left, right))
+
+    return boundaries
+
+
+def _find_spanning_columns(
+    box: OCRBox, boundaries: List[Tuple[float, float]]
+) -> Tuple[int, int]:
+    """Find the column range a box spans."""
+    bx_left, bx_right = box.box[0], box.box[2]
+    start_col = 0
+    end_col = 0
+    for i, (bl, br) in enumerate(boundaries):
+        mid = (bl + br) / 2
+        if bx_left <= mid:
+            start_col = i
+            break
+    for i in range(15, -1, -1):
+        bl, br = boundaries[i]
+        mid = (bl + br) / 2
+        if bx_right >= mid:
+            end_col = i
+            break
+    if end_col < start_col:
+        end_col = start_col
+    return start_col, end_col
+
+
+def _box_row_to_dict(
+    box_row: List[OCRBox],
+    boundaries: List[Tuple[float, float]],
+    track_number: str = "",
+) -> Dict[str, str]:
+    """Convert a row of OCRBox objects to a 16-column dict."""
+    row = {col: "" for col in TYPE1_COLUMNS}
+    if track_number:
+        row["股道"] = track_number
+
+    for box in box_row:
+        start_col, end_col = _find_spanning_columns(box, boundaries)
+        parts = box.text.split()
+
+        # Extend span when text has more parts than detected columns
+        # (OCR merges adjacent column values into one box)
+        if parts and len(parts) > (end_col - start_col + 1):
+            desired_end = start_col + len(parts) - 1
+            if desired_end < 16:
+                ext_left, _ = boundaries[desired_end]
+                if box.box[2] > ext_left:
+                    end_col = desired_end
+
+        n_cols = end_col - start_col + 1
+
+        if n_cols == 1:
+            key = TYPE1_COLUMNS[start_col]
+            row[key] = (row[key] + " " + box.text).strip()
+        else:
+            if not parts:
+                continue
+
+            if len(parts) >= n_cols:
+                for j in range(n_cols):
+                    key = TYPE1_COLUMNS[start_col + j]
+                    if j < len(parts):
+                        row[key] = (row[key] + " " + parts[j]).strip()
+            elif len(parts) == 1:
+                text = parts[0]
+                m = re.match(r'^(\d{1,3})([A-Za-z].*)$', text)
+                if m and start_col <= 1 and end_col >= 2:
+                    row["序"] = m.group(1)
+                    row["车种"] = normalize_vehicle_type(m.group(2))
+                else:
+                    mid_col = (start_col + end_col) // 2
+                    row[TYPE1_COLUMNS[mid_col]] = text
+            else:
+                for j, part in enumerate(parts):
+                    col_idx = start_col + j
+                    if col_idx <= end_col:
+                        row[TYPE1_COLUMNS[col_idx]] = part
+
+    if row["车种"]:
+        row["车种"] = normalize_vehicle_type(row["车种"])
+
+    return row
+
+
+def extract_type1_columns(
+    ocr_results: List[OCRBox], tolerance: int = None
+) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """
+    Type 1 (站存车打印) extraction with 16-column mapping.
+    Returns (metadata, list_of_row_dicts).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    box_rows = aggregate_to_box_rows(ocr_results, tolerance)
+    if not box_rows:
+        return {}, []
+
+    image_width = max(b.box[2] for b in ocr_results)
+
+    # Find primary header row and merge with adjacent secondary header rows
+    header_indices: set = set()
+    header_boxes: List[OCRBox] = []
+    primary_idx = -1
+
+    for i, brow in enumerate(box_rows):
+        if _is_header_box_row(brow):
+            primary_idx = i
+            header_indices.add(i)
+            header_boxes.extend(brow)
+            break
+
+    if primary_idx >= 0:
+        for adj_idx in [primary_idx - 1, primary_idx + 1]:
+            if 0 <= adj_idx < len(box_rows) and adj_idx not in header_indices:
+                adj_row = box_rows[adj_idx]
+                if _is_secondary_header_row(adj_row):
+                    for box in adj_row:
+                        box_text = box.text.replace(' ', '')
+                        if any(kw in box_text for kw in _HEADER_COL_MAP):
+                            header_boxes.append(box)
+                    header_indices.add(adj_idx)
+
+    last_header_idx = max(header_indices) if header_indices else -1
+
+    if header_boxes:
+        col_centers = _parse_column_centers(header_boxes)
+        logger.debug(f"Header column centers: {col_centers}")
+        boundaries = _build_column_boundaries(col_centers, image_width)
+    else:
+        logger.warning("Header row not found, using uniform boundaries")
+        step = image_width / 16
+        boundaries = [(i * step, (i + 1) * step) for i in range(16)]
+
+    metadata: Dict[str, Any] = {}
+    data_box_rows: List[List[OCRBox]] = []
+    track_number = ""
+
+    for i, brow in enumerate(box_rows):
+        if i in header_indices:
+            continue
+
+        row_text = ''.join(b.text for b in brow)
+
+        if re.match(r'^第\d+页$', row_text.strip()):
+            continue
+        if _is_header_box_row(brow):
+            continue
+        if last_header_idx >= 0 and i < last_header_idx:
+            continue
+
+        data_box_rows.append(brow)
+
+    # Detect track number from first data row
+    if data_box_rows:
+        first_row_boxes = data_box_rows[0]
+        if len(first_row_boxes) >= 2:
+            leftmost = first_row_boxes[0]
+            second = first_row_boxes[1]
+            left_text = leftmost.text.strip()
+            second_text = second.text.strip()
+
+            if re.match(r'^\d{1,2}$', left_text):
+                seq_match = re.match(r'^[12]\b', second_text)
+                if seq_match:
+                    track_number = left_text
+                    data_box_rows[0] = first_row_boxes[1:]
+
+    table_data: List[Dict[str, str]] = []
+    for brow in data_box_rows:
+        row_text = ''.join(b.text for b in brow)
+        if not re.search(r'\d', row_text):
+            continue
+
+        row_dict = _box_row_to_dict(brow, boundaries, track_number)
+
+        if row_dict["序"] or row_dict["车号"]:
+            table_data.append(row_dict)
+
+    return metadata, table_data

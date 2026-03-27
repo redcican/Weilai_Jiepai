@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.6.1] - 2026-03-27
+### Features
+- **Type 2 pattern-based column assignment** — 集装箱编组单 values are now classified by pattern instead of position
+  - Slash-vehicle (e.g., C70E/1721133) → ID1
+  - Container number (e.g., TBJU3216534) → ID2, then ID3
+  - Chinese text (e.g., 漳平) → 地点
+  - Digits at position 0 → 序
+  - Garbage/noise (e.g., `\y`, single letters) → skipped
+  - Fragment rows (seq only, no data) → filtered out
+  - Corrupted seq digits (e.g., `寸` for 4, `o` for 6) → inferred from previous row
+
+### Design Rationale
+- Positional assignment failed because OCR can miss values or insert garbage, shifting everything: `漳平` at position 3 → ID3 instead of 地点; `\y` garbage at position 0 → all subsequent values shift right
+- Pattern-based classification is invariant to missing/extra values — each value is assigned by what it looks like, not where it appears
+- Regex patterns `_SLASH_VEHICLE_RE`, `_CONTAINER_RE`, `_CHINESE_RE` handle all observed data types
+
+### Files Changed
+- `OCR_CnOCR/table_ocr_cnocr.py` — added `_classify_type2_row()`, rewrote `_extract_type2()` post-processing
+- `dms_api/app/ocr/utils.py` — same changes (added `_classify_type2_row()`, rewrote `extract_type2()`)
+
+## [0.6.0] - 2026-03-27
+### Features
+- **Type 1 column-boundary extraction** — 站存车打印 tables now output 16-key dicts with proper column names instead of raw arrays
+  - Columns: 股道, 序, 车种, 油种, 车号, 自重, 换长, 载重, 到站, 品名, 记事, 发站, 篷布, 票据号, 属性, 收货人
+  - Uses header row x-positions to define column boundaries, then assigns each OCR box to its column by x-coordinate overlap
+  - Proportional character-width splitting for merged header text (e.g. "股道序车种油种" → 4 separate column centers)
+- **Multi-row header merging** — handles documents where the header spans two OCR rows (e.g. left-side columns on a separate line)
+- Changes applied to both standalone OCR (`OCR_CnOCR/table_ocr_cnocr.py`) and API (`dms_api/app/ocr/`)
+
+### Design Rationale
+- Header x-positions are the only reliable signal for column boundaries — OCR boxes from data rows merge unpredictably across columns
+- Proportional character-width estimation works because CnOCR uses monospace-like bounding boxes for Chinese text
+- Secondary header detection (≥1 keyword) with adjacency check avoids false positives while catching split headers
+
+### Files Changed
+- `OCR_CnOCR/table_ocr_cnocr.py` — added `_extract_type1_columns()`, `aggregate_to_box_rows()`, `_parse_column_centers()`, `_build_column_boundaries()`, `_box_row_to_dict()`, `_is_secondary_header_row()`; `extract_table_data()` Type 1 branch now delegates to `_extract_type1_columns()`
+- `dms_api/app/ocr/utils.py` — added same functions (`extract_type1_columns()`, `aggregate_to_box_rows()`, column boundary helpers)
+- `dms_api/app/ocr/processor.py` — simplified `process()` to use `extract_type1_columns()` for Type 1, removed old `_extract_type1()` method
+
 ## [0.5.0] - 2026-03-26
 ### Features
 - **Batch image upload** for ticket OCR — `POST /api/v1/ticket/parse` now accepts multiple images in a single request
