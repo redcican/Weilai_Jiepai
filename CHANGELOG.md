@@ -1,120 +1,137 @@
-# Changelog
+# 更新日志
+
+## [0.7.1] - 2026-04-01
+### 功能
+- **信号灯颜色识别** — `POST /api/v1/signal-light/detect/batch` 批量检测端点
+  - 纯 OpenCV + NumPy（无 ML 模型）— HSV 色彩空间分析 + 连通域 blob 检测
+  - 输出：中文颜色标签 — 红色、白色、蓝色、未知
+  - 两种检测模式：
+    - **ROI 模式**（推荐）：传入 `roi=x1,y1,x2,y2`（1280×720 坐标系），准确率 100%（22/22）
+    - **自动模式**：不传 ROI，通过 S*V 亮度×饱和度排序自动定位信号灯，适合信号灯明亮且背景简单的场景
+  - 红色 LED 双范围检测：冷红/品红(H≥155) + 暖红/橙红(H≤18)
+  - 蓝色 LED 严格亮度阈值(V>200)区分发光 LED 与蓝色喷漆设备
+  - ROI 内自动红/白消歧：检测最亮像素的 R-B 通道差异，无需额外参数
+  - 新模块 `app/signal_light/`，`SignalLightEngine` 单例引擎
+  - `SignalLightService` — 独立服务（无 DMS 后端依赖），沿用 `TrainIDService` 模式
+  - 配置项：`DMS_SIGNAL_LIGHT_ENABLED` 环境变量
+- **清理旧端点** — 移除 `POST /api/v1/signal/change` 和 `POST /api/v1/container`
+
+### 设计说明
+- 沿用 `train_id` 集成模式：独立引擎 → 单例服务 → 批量 API 端点
+- 选择纯 CV 方案而非 ML，依赖最小化（仅 OpenCV + NumPy，项目已有）
+- ROI 模式下固定摄像头只需部署时配置一次坐标，消除天空、火车、设备等背景干扰
+- 自动模式下 camera 2 红色信号灯 V 值仅 69-134，与背景亮度接近，纯 CV 全图扫描无法可靠区分——这是物理限制而非算法缺陷
+- ROI 内红/白消歧：在 ROI 区域找最亮像素，若该点过曝(V>200)且低饱和(S<55)，检查 R-B < -5 则判定为白色
+
+### 文件变更
+- 新增 `dms_api/app/signal_light/__init__.py` — 模块初始化
+- 新增 `dms_api/app/signal_light/engine.py` — `SignalLightEngine`（从 `Light_signal/signal_detect.py` 适配，接受 bytes 输入）
+- 新增 `dms_api/app/schemas/signal_light.py` — `SignalLightItem`、`SignalLightBatchResponse`
+- 新增 `dms_api/app/services/signal_light.py` — `SignalLightService` 单例
+- 新增 `dms_api/app/api/v1/signal_light.py` — `POST /detect/batch` 端点
+- 新增 `Light_signal/signal_detect.py` — 独立信号灯检测脚本（CLI 工具，含校准/调试/评估功能）
+- 修改 `dms_api/app/api/v1/router.py` — 注册 `signal_light_router`，移除 signal/container 路由
+- 修改 `dms_api/app/dependencies.py` — 添加 `SignalLightServiceDep`，移除旧依赖
+- 修改 `dms_api/app/config.py` — 添加 `signal_light_enabled` 配置项
+- 修改 `dms_api/app/schemas/__init__.py` — 更新导出列表
+- 修改 `dms_api/app/services/__init__.py` — 更新导出列表
+- 删除 `dms_api/app/api/v1/signal.py`、`container.py` — 旧端点
+- 删除 `dms_api/app/services/signal.py`、`container.py` — 旧服务
+- 删除 `dms_api/app/schemas/signal.py`、`container.py` — 旧 schema
 
 ## [0.6.1] - 2026-03-27
-### Features
-- **Type 2 pattern-based column assignment** — 集装箱编组单 values are now classified by pattern instead of position
-  - Slash-vehicle (e.g., C70E/1721133) → ID1
-  - Container number (e.g., TBJU3216534) → ID2, then ID3
-  - Chinese text (e.g., 漳平) → 地点
-  - Digits at position 0 → 序
-  - Garbage/noise (e.g., `\y`, single letters) → skipped
-  - Fragment rows (seq only, no data) → filtered out
-  - Corrupted seq digits (e.g., `寸` for 4, `o` for 6) → inferred from previous row
+### 功能
+- **Type 2 基于模式的列分配** — 集装箱编组单的值按模式而非位置分类
+  - 斜杠车型（如 C70E/1721133）→ ID1
+  - 集装箱号（如 TBJU3216534）→ ID2，然后 ID3
+  - 中文文本（如 漳平）→ 地点
+  - 位置 0 处的数字 → 序
+  - 垃圾/噪声（如 `\y`、单字母）→ 跳过
+  - 片段行（仅有序号，无数据）→ 过滤
+  - 损坏的序号数字（如 `寸` 代替 4，`o` 代替 6）→ 从上一行推断
 
-### Design Rationale
-- Positional assignment failed because OCR can miss values or insert garbage, shifting everything: `漳平` at position 3 → ID3 instead of 地点; `\y` garbage at position 0 → all subsequent values shift right
-- Pattern-based classification is invariant to missing/extra values — each value is assigned by what it looks like, not where it appears
-- Regex patterns `_SLASH_VEHICLE_RE`, `_CONTAINER_RE`, `_CHINESE_RE` handle all observed data types
+### 设计说明
+- 位置分配方式失败，因为 OCR 可能遗漏值或插入垃圾字符，导致所有后续值偏移
+- 基于模式的分类不受缺失/多余值影响——每个值按其外观分配，而非出现位置
+- 正则模式 `_SLASH_VEHICLE_RE`、`_CONTAINER_RE`、`_CHINESE_RE` 覆盖所有已观察到的数据类型
 
-### Files Changed
-- `OCR_CnOCR/table_ocr_cnocr.py` — added `_classify_type2_row()`, rewrote `_extract_type2()` post-processing
-- `dms_api/app/ocr/utils.py` — same changes (added `_classify_type2_row()`, rewrote `extract_type2()`)
+### 文件变更
+- `OCR_CnOCR/table_ocr_cnocr.py` — 添加 `_classify_type2_row()`，重写 `_extract_type2()` 后处理
+- `dms_api/app/ocr/utils.py` — 同上
 
 ## [0.6.0] - 2026-03-27
-### Features
-- **Type 1 column-boundary extraction** — 站存车打印 tables now output 16-key dicts with proper column names instead of raw arrays
-  - Columns: 股道, 序, 车种, 油种, 车号, 自重, 换长, 载重, 到站, 品名, 记事, 发站, 篷布, 票据号, 属性, 收货人
-  - Uses header row x-positions to define column boundaries, then assigns each OCR box to its column by x-coordinate overlap
-  - Proportional character-width splitting for merged header text (e.g. "股道序车种油种" → 4 separate column centers)
-- **Multi-row header merging** — handles documents where the header spans two OCR rows (e.g. left-side columns on a separate line)
-- Changes applied to both standalone OCR (`OCR_CnOCR/table_ocr_cnocr.py`) and API (`dms_api/app/ocr/`)
+### 功能
+- **Type 1 列边界提取** — 站存车打印表格输出 16 键字典，列名为：股道、序、车种、油种、车号、自重、换长、载重、到站、品名、记事、发站、篷布、票据号、属性、收货人
+  - 使用表头行 x 坐标定义列边界，按 x 坐标重叠将 OCR 框分配到对应列
+  - 合并表头文本的等比字符宽度拆分（如 "股道序车种油种" → 4 个独立列中心）
+- **多行表头合并** — 处理表头跨两行 OCR 行的文档
+- 同步应用到独立 OCR（`OCR_CnOCR/table_ocr_cnocr.py`）和 API（`dms_api/app/ocr/`）
 
-### Design Rationale
-- Header x-positions are the only reliable signal for column boundaries — OCR boxes from data rows merge unpredictably across columns
-- Proportional character-width estimation works because CnOCR uses monospace-like bounding boxes for Chinese text
-- Secondary header detection (≥1 keyword) with adjacency check avoids false positives while catching split headers
+### 设计说明
+- 表头 x 坐标是列边界的唯一可靠信号——数据行的 OCR 框会跨列不可预测地合并
+- 等比字符宽度估算可行，因为 CnOCR 对中文文本使用近似等宽的边界框
+- 次级表头检测（≥1 个关键词）配合邻近性检查，避免误报同时捕获分割的表头
 
-### Files Changed
-- `OCR_CnOCR/table_ocr_cnocr.py` — added `_extract_type1_columns()`, `aggregate_to_box_rows()`, `_parse_column_centers()`, `_build_column_boundaries()`, `_box_row_to_dict()`, `_is_secondary_header_row()`; `extract_table_data()` Type 1 branch now delegates to `_extract_type1_columns()`
-- `dms_api/app/ocr/utils.py` — added same functions (`extract_type1_columns()`, `aggregate_to_box_rows()`, column boundary helpers)
-- `dms_api/app/ocr/processor.py` — simplified `process()` to use `extract_type1_columns()` for Type 1, removed old `_extract_type1()` method
+### 文件变更
+- `OCR_CnOCR/table_ocr_cnocr.py` — 添加 `_extract_type1_columns()` 等函数
+- `dms_api/app/ocr/utils.py` — 添加相同函数
+- `dms_api/app/ocr/processor.py` — 简化 `process()` 使用 `extract_type1_columns()`
 
 ## [0.5.0] - 2026-03-26
-### Features
-- **Batch image upload** for ticket OCR — `POST /api/v1/ticket/parse` now accepts multiple images in a single request
-  - Response wraps all results in one `data` array with `filename` per item
-  - Single `message`/`status` at top level (e.g. "识别成功, 2/2 张图片")
-- **Swagger UI multi-file select** — custom `/docs` page with JS patch so users can select multiple files in one dialog (Ctrl/Shift+Click) instead of adding items one by one
-- **UTF-8 charset fix** — middleware adds `charset=utf-8` to all JSON responses, fixing garbled Chinese in browsers
-- **OpenAPI schema patch** — converts `contentMediaType` to `format: binary` for Swagger UI 5 file upload compatibility
+### 功能
+- **票据 OCR 批量图片上传** — `POST /api/v1/ticket/parse` 单次请求支持多张图片
+- **Swagger UI 多文件选择** — 自定义 `/docs` 页面，支持 Ctrl/Shift+Click 选择多文件
+- **UTF-8 字符集修复** — 中间件为所有 JSON 响应添加 `charset=utf-8`，修复浏览器中文乱码
+- **OpenAPI schema 补丁** — 将 `contentMediaType` 转换为 `format: binary` 兼容 Swagger UI 5
 
-### Design Rationale
-- Swagger UI 5 doesn't support OpenAPI 3.1's `contentMediaType` for file inputs — patching the schema to use `format: binary` is the standard workaround
-- Swagger UI only reads one file per `<input>` even with `multiple` attribute — a fetch interceptor rebuilds FormData with all selected files before the request is sent
-- `charset=utf-8` in Content-Type is needed because some browsers default to system locale encoding for `application/json` without explicit charset
-
-### Notes & Caveats
-- Custom `/docs` page replaces FastAPI's built-in Swagger UI (only in dev/debug mode)
-- The fetch interceptor is a Swagger UI workaround — programmatic clients (curl, httpx) send multiple files natively
+### 设计说明
+- Swagger UI 5 不支持 OpenAPI 3.1 的 `contentMediaType` 文件输入——修补 schema 使用 `format: binary` 是标准方案
+- `charset=utf-8` 在 Content-Type 中是必需的，某些浏览器默认使用系统区域编码
 
 ## [0.4.0] - 2026-03-26
-### Features
-- **Two table type support** for OCR recognition:
-  - **Type 1** (站存车打印): ~16 columns, vehicle type/number in separate columns. Track number output as `{"股道": "4"}` first element.
-  - **Type 2** (集装箱编组单): ~5 columns with slash vehicle/number (e.g. `C70E/1805776`) and container numbers (e.g. `TBJU3216534`).
-- Auto-detection based on slash-vehicle patterns (unique to Type 2)
-- `table_type` field added to all OCR output (both standalone and API)
-- Type 2 post-processing: infer missing sequence numbers, cap at 5 columns, filter fragment rows, clean leading/trailing OCR noise
-- API output changed to raw table data arrays — no column-name mapping, `tableType` field added
+### 功能
+- **双表格类型 OCR 识别**：
+  - **Type 1**（站存车打印）：~16 列，车种/车号独立列
+  - **Type 2**（集装箱编组单）：~5 列，斜杠车型/车号（如 `C70E/1805776`）和集装箱号
+- 基于斜杠车型模式自动检测表格类型
+- 所有 OCR 输出添加 `table_type` 字段
+- Type 2 后处理：推断缺失序号、上限 5 列、过滤片段行、清理 OCR 噪声
 
-### Design Rationale
-- Slash-vehicle pattern (`C70E/1805776`) is the sole detection signal — container patterns alone cause false positives (Type 1 has cargo reference codes like `JHSX4535071` that resemble container numbers)
-- Type 2 MAX_COLS=5 cap removes OCR hallucinations (e.g. "车海发公司") without hardcoding specific noise strings
-- Missing sequence number inference uses position tracking (next_seq counter), with MIN_INFERRED=4 to filter fragment rows
-- API schema changed from `TicketData` (named fields) to `OCRTableData` (raw arrays) because column structure differs by type. Old `TicketData` kept for DMS backend compatibility
-
-### Files Changed
-- `OCR_CnOCR/table_ocr_cnocr.py` — standalone: added `detect_table_type()`, `_extract_type2()`, modified `extract_table_data()` to branch by type
-- `dms_api/app/ocr/utils.py` — added `detect_table_type()`, `is_page_footer()`, `extract_type2()`
-- `dms_api/app/ocr/processor.py` — rewrote `process()` with type branching, removed column mapping methods
-- `dms_api/app/ocr/models.py` — added `table_type` to `OCRResult`
-- `dms_api/app/schemas/ticket.py` — new `OCRTableData` schema, `TicketParseResponse` wraps it
-- `dms_api/app/services/ocr.py` — simplified to return `OCRResult` directly
-- `dms_api/app/services/ticket.py` — uses `OCRTableData`, both local and DMS paths
+### 设计说明
+- 斜杠车型模式（`C70E/1805776`）是唯一的检测信号——仅用集装箱模式会误报
+- Type 2 MAX_COLS=5 上限移除 OCR 幻觉，无需硬编码特定噪声字符串
+- API schema 从命名字段改为原始数组，因列结构按类型不同
 
 ## [0.3.0] - 2026-03-19
-### Features
-- Integrate train_id_ocr into dms_api as independent FastAPI service
-  - `POST /api/v1/train-id/recognize` — single image vehicle type/number recognition
-  - `POST /api/v1/train-id/recognize/batch` — batch recognition
-  - New module `app/train_id/` with hybrid CnOCR engine (db_resnet18 + ch_PP-OCRv3_det)
-  - `TrainIDService` — standalone service (no DMS backend dependency)
-  - Config: `DMS_TRAIN_ID_OCR_ENABLED` env var
-  - 10 new tests (4 endpoint + 6 unit)
+### 功能
+- **进站车辆识别集成** — 作为独立 FastAPI 服务集成到 dms_api
+  - `POST /api/v1/train-id/recognize` — 单张图片车种/车号识别
+  - `POST /api/v1/train-id/recognize/batch` — 批量识别
+  - 新模块 `app/train_id/`，混合 CnOCR 引擎（db_resnet18 + ch_PP-OCRv3_det）
+  - `TrainIDService` — 独立服务（无 DMS 后端依赖）
 
-### Design Rationale
-- Followed existing OCR integration pattern (`app/ocr/` → `services/ocr.py` → `api/v1/ticket.py`)
-- TrainIDService is standalone (no BaseService/DMSRepository) since all processing is local
-- Engine adapted from `train_id_ocr/train_id_ocr.py` to accept bytes instead of file paths
-- Dependency injection via `get_train_id_service` for testability
+### 设计说明
+- 沿用现有 OCR 集成模式
+- TrainIDService 独立运行，所有处理在本地完成
+- 引擎从 `train_id_ocr/train_id_ocr.py` 适配为接受 bytes 输入
 
 ## [0.2.0] - 2026-03-19
-### Features
-- Rewrite train_id_ocr module for 100% accuracy
-  - Hybrid dual-engine OCR (db_resnet18 + ch_PP-OCRv3_det)
-  - Image resize to 0.25 scale before preprocessing
-  - 4-pass preprocessing pipeline (bilateral+CLAHE, CLAHE, gamma x2)
-  - General pattern-based `_fix_vehicle_type()` (no hardcoded replacements)
-  - Superset-aware majority voting for vehicle numbers
+### 功能
+- **重写 train_id_ocr 模块**，准确率 100%
+  - 混合双引擎 OCR（db_resnet18 + ch_PP-OCRv3_det）
+  - 图片缩放至 0.25 倍后预处理
+  - 4 轮预处理流水线（bilateral+CLAHE、CLAHE、gamma×2）
+  - 基于模式的通用 `_fix_vehicle_type()`（无硬编码替换）
+  - 超集感知的车号多数投票
 
-### Design Rationale
-- db_resnet18 fixes 8→3 digit confusion; ch_PP-OCRv3_det keeps complete type strings
-- Position-based character confusion tables generalize to any vehicle type pattern
-- Gamma passes (2.0, 3.0) find trailing edge digits invisible to other passes
+### 设计说明
+- db_resnet18 修复 8→3 数字混淆；ch_PP-OCRv3_det 保持完整车型字符串
+- 基于位置的字符混淆表可泛化到任意车型模式
+- Gamma 轮次（2.0、3.0）发现其他轮次不可见的末尾边缘数字
 
 ## [0.1.0] - 2026-03-18
-### Features
-- Initial commit: DMS API gateway and OCR tools
-- FastAPI gateway with abnormal, container, signal, ticket endpoints
-- Local CnOCR integration for ticket parsing
-- Station-entry train ID recognition module
+### 功能
+- 初始提交：DMS API 网关和 OCR 工具
+- FastAPI 网关，含异常告警、票据解析端点
+- 本地 CnOCR 集成用于票据解析
+- 进站车辆识别模块

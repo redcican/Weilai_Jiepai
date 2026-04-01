@@ -10,10 +10,9 @@ from fastapi import Depends, Request
 from .config import Settings, get_settings
 from .repositories.dms import DMSRepository, get_dms_repository
 from .services.abnormal import AbnormalService
-from .services.container import ContainerService
-from .services.signal import SignalService
 from .services.ticket import TicketService
 from .services.train_id import TrainIDService, get_train_id_service_singleton
+from .services.signal_light import SignalLightService, get_signal_light_service_singleton
 
 
 # Settings dependency
@@ -39,20 +38,6 @@ async def get_abnormal_service(
     return AbnormalService(repository)
 
 
-async def get_container_service(
-    repository: RepositoryDep,
-) -> ContainerService:
-    """Get container service instance."""
-    return ContainerService(repository)
-
-
-async def get_signal_service(
-    repository: RepositoryDep,
-) -> SignalService:
-    """Get signal service instance."""
-    return SignalService(repository)
-
-
 async def get_ticket_service(
     repository: RepositoryDep,
 ) -> TicketService:
@@ -62,8 +47,6 @@ async def get_ticket_service(
 
 # Type aliases for dependency injection
 AbnormalServiceDep = Annotated[AbnormalService, Depends(get_abnormal_service)]
-ContainerServiceDep = Annotated[ContainerService, Depends(get_container_service)]
-SignalServiceDep = Annotated[SignalService, Depends(get_signal_service)]
 TicketServiceDep = Annotated[TicketService, Depends(get_ticket_service)]
 
 
@@ -74,6 +57,15 @@ async def get_train_id_service() -> TrainIDService:
 
 
 TrainIDServiceDep = Annotated[TrainIDService, Depends(get_train_id_service)]
+
+
+# Signal Light service (standalone — no repository needed)
+async def get_signal_light_service() -> SignalLightService:
+    """Get signal light service instance."""
+    return get_signal_light_service_singleton()
+
+
+SignalLightServiceDep = Annotated[SignalLightService, Depends(get_signal_light_service)]
 
 
 # Request ID dependency

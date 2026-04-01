@@ -118,69 +118,6 @@ class TestAbnormalEndpoints:
 
 
 @pytest.mark.asyncio
-class TestContainerEndpoints:
-    """Tests for container identification endpoints."""
-
-    async def test_create_container_success(
-        self,
-        client: AsyncClient,
-        sample_image_content: bytes,
-    ):
-        """Test creating container record."""
-        response = await client.post(
-            "/api/v1/container",
-            data={
-                "trainNo": "T001",
-                "carbinNo": "C12345",
-                "contrainerNo": "CONT001",
-            },
-            files={"file": ("test.jpg", sample_image_content, "image/jpeg")},
-        )
-        assert response.status_code == 201
-
-        data = response.json()
-        assert data["success"] is True
-        assert data["data"]["trainNo"] == "T001"
-
-    async def test_create_container_empty_field(
-        self,
-        client: AsyncClient,
-        sample_image_content: bytes,
-    ):
-        """Test validation error for empty field."""
-        response = await client.post(
-            "/api/v1/container",
-            data={
-                "trainNo": "",
-                "carbinNo": "C12345",
-                "contrainerNo": "CONT001",
-            },
-            files={"file": ("test.jpg", sample_image_content, "image/jpeg")},
-        )
-        assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-class TestSignalEndpoints:
-    """Tests for signal light endpoints."""
-
-    async def test_report_signal_change(
-        self,
-        client: AsyncClient,
-        sample_image_content: bytes,
-    ):
-        """Test reporting signal change."""
-        response = await client.post(
-            "/api/v1/signal/change",
-            files={"file": ("signal.jpg", sample_image_content, "image/jpeg")},
-        )
-        assert response.status_code == 201
-
-        data = response.json()
-        assert data["success"] is True
-
-
-@pytest.mark.asyncio
 class TestTicketEndpoints:
     """Tests for ticket parsing endpoints."""
 

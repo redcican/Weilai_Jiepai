@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     # Train ID OCR Configuration
     train_id_ocr_enabled: bool = Field(default=True, description="Enable train ID recognition")
 
+    # Signal Light Detection Configuration
+    signal_light_enabled: bool = Field(default=True, description="Enable signal light color detection")
+
     @field_validator("api_keys", mode="before")
     @classmethod
     def parse_api_keys(cls, v):
