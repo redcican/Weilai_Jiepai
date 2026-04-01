@@ -32,13 +32,11 @@ class SignalLightService:
     async def detect_batch(
         self,
         images: list[tuple[bytes, str]],
-        roi: list[int] | None = None,
     ) -> list[SignalLightItem]:
         """Detect signal light color from multiple images.
 
         Args:
             images: List of (image_bytes, filename) tuples.
-            roi: Optional [x1, y1, x2, y2] in 1280x720 coordinates.
 
         Returns:
             List of SignalLightItem with filename and Chinese color.
@@ -46,7 +44,7 @@ class SignalLightService:
         engine = self.get_engine()
         results = []
         for image_bytes, filename in images:
-            color = engine.detect_from_bytes(image_bytes, roi=roi)
+            color = engine.detect_from_bytes(image_bytes)
             logger.info(f"Signal light: {filename} → {color}")
             results.append(SignalLightItem(filename=filename, color=color))
         return results
