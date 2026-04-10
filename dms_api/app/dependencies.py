@@ -13,6 +13,7 @@ from .services.abnormal import AbnormalService
 from .services.ticket import TicketService
 from .services.train_id import TrainIDService, get_train_id_service_singleton
 from .services.signal_light import SignalLightService, get_signal_light_service_singleton
+from .services.pedestrian import PedestrianService, get_pedestrian_service_singleton
 
 
 # Settings dependency
@@ -66,6 +67,15 @@ async def get_signal_light_service() -> SignalLightService:
 
 
 SignalLightServiceDep = Annotated[SignalLightService, Depends(get_signal_light_service)]
+
+
+# Pedestrian Detection service (standalone — no repository needed)
+async def get_pedestrian_service() -> PedestrianService:
+    """Get pedestrian detection service instance."""
+    return get_pedestrian_service_singleton()
+
+
+PedestrianServiceDep = Annotated[PedestrianService, Depends(get_pedestrian_service)]
 
 
 # Request ID dependency

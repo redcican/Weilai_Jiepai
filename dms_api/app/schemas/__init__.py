@@ -29,6 +29,11 @@ from .signal_light import (
     SignalLightItem,
     SignalLightBatchResponse,
 )
+from .pedestrian import (
+    PedestrianDetection,
+    PedestrianItem,
+    PedestrianBatchResponse,
+)
 
 __all__ = [
     # Base
@@ -58,4 +63,8 @@ __all__ = [
     # Signal Light
     "SignalLightItem",
     "SignalLightBatchResponse",
+    # Pedestrian
+    "PedestrianDetection",
+    "PedestrianItem",
+    "PedestrianBatchResponse",
 ]

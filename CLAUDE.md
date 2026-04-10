@@ -18,6 +18,8 @@ Independent modules at the root, each with its own dependencies:
 | `OCR_CnOCR/` | CnOCR-based table extractor (ONNX backend, lighter weight, optimized for Chinese) |
 | `train_id_ocr/` | Station-entry train ID recognition — extracts vehicle type + number from dark camera images |
 | `dms_api/` | FastAPI gateway — REST API with local OCR + upstream DMS backend proxy |
+| `abnormaldrivingsafety/` | Standalone pedestrian anomaly detector (YOLOv8, two-pass tiling) |
+| `abnormaldrivingsafety_figures/` | Sample images + ground truth for pedestrian detection |
 | `API_test/` | DMS backend API documentation (DMS_API.docx) |
 | `进站_OCR/` | Sample images + ground truth for train ID recognition |
 

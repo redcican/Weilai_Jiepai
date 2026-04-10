@@ -72,6 +72,22 @@ The engine accepts raw image bytes, resizes (0.25 scale), runs 4 preprocessing v
 
 To mock in tests, override `get_train_id_service` from `app.dependencies`.
 
+### Pedestrian Detection
+
+The pedestrian module (`app/pedestrian/`) detects persons in freight carriage top-down camera images:
+
+- **PedestrianEngine** (`engine.py`): Singleton YOLOv8 engine with two-pass strategy — full-image at 1280px, then sliding-window tiling (640px tiles, 30% overlap) for small/edge targets
+- **PedestrianService** (`services/pedestrian.py`): High-level service, standalone (no DMS backend dependency)
+- **Schemas** (`schemas/pedestrian.py`): PedestrianItem, PedestrianBatchResponse
+
+Configuration:
+- `DMS_PEDESTRIAN_DETECTION_ENABLED`: Enable/disable (default: true)
+- `DMS_PEDESTRIAN_DETECTION_DEVICE`: Inference device — `cpu`, `cuda`, `cuda:0` (default: cpu)
+- `DMS_PEDESTRIAN_DETECTION_MODEL`: YOLO model file (default: yolov8n.pt)
+- `DMS_PEDESTRIAN_DETECTION_TILE_ENABLED`: Enable tiling fallback (default: true)
+
+To mock in tests, override `get_pedestrian_service` from `app.dependencies`.
+
 ### API Endpoints
 
 All business endpoints are under `/api/v1/`:
@@ -82,6 +98,7 @@ All business endpoints are under `/api/v1/`:
 - `POST /api/v1/ticket/parse` - OCR ticket parsing (uses local OCR)
 - `POST /api/v1/train-id/recognize` - Single image train ID recognition
 - `POST /api/v1/train-id/recognize/batch` - Batch train ID recognition
+- `POST /api/v1/pedestrian/detect/batch` - Batch pedestrian anomaly detection
 
 Health endpoints: `/health`, `/health/live`, `/health/ready`, `/health/detailed`
 

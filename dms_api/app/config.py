@@ -95,6 +95,18 @@ class Settings(BaseSettings):
     # Signal Light Detection Configuration
     signal_light_enabled: bool = Field(default=True, description="Enable signal light color detection")
 
+    # Pedestrian Detection Configuration
+    pedestrian_detection_enabled: bool = Field(default=True, description="Enable pedestrian detection")
+    pedestrian_detection_model: str = Field(default="yolov8n.pt", description="YOLO model file name")
+    pedestrian_detection_use_gpu: bool = Field(default=False, description="Use GPU (CUDA) for inference")
+    pedestrian_detection_confidence: float = Field(default=0.25, ge=0.0, le=1.0, description="Primary confidence threshold")
+    pedestrian_detection_iou: float = Field(default=0.45, ge=0.0, le=1.0, description="IoU threshold for NMS")
+    pedestrian_detection_imgsz: int = Field(default=1280, description="Primary inference image size")
+    pedestrian_detection_tile_enabled: bool = Field(default=True, description="Enable sliding-window tiling fallback")
+    pedestrian_detection_tile_size: int = Field(default=640, description="Tile size in pixels")
+    pedestrian_detection_tile_overlap: float = Field(default=0.3, ge=0.0, lt=1.0, description="Tile overlap ratio")
+    pedestrian_detection_tile_confidence: float = Field(default=0.15, ge=0.0, le=1.0, description="Tile confidence threshold")
+
     @field_validator("api_keys", mode="before")
     @classmethod
     def parse_api_keys(cls, v):

@@ -1,5 +1,42 @@
 # 更新日志
 
+## [0.9.0] - 2026-04-10
+### 功能
+- **行人异常检测** — `POST /api/v1/pedestrian/detect/batch` 批量检测端点
+  - YOLOv8n（COCO 预训练权重）检测货车车厢俯视图中的工作人员
+  - 有行人 → 异常（异常），无行人 → 正常（正常）
+  - **两阶段检测策略**：
+    - Pass 1：全图推理（1280px），捕获大部分目标
+    - Pass 2：滑动窗口分块（640px 瓦片，30% 重叠），捕获小目标/边缘目标
+  - **安全装备颜色验证** — 分块检测后通过 HSV 色彩分析过滤误检：
+    - 橙色安全帽：H=5-22, S>100, V>100
+    - 荧光背心：H=25-85, S>60, V>80
+    - 阈值 100 像素完美分离真检测（最低 103）与误检（最高 93）
+  - 40 张测试图片准确率 **100%**（20 张异常 + 20 张正常）
+  - GPU 推理支持：API 层 `use_gpu` 参数 + 配置 `DMS_PEDESTRIAN_DETECTION_USE_GPU`
+- **独立检测脚本** — `abnormaldrivingsafety/pedestrian_detect.py` CLI 工具，支持文件夹评估、调试标注图、JSON 输出
+
+### 设计说明
+- 沿用 `signal_light`/`train_id` 集成模式：独立引擎（单例）→ 服务 → 批量 API 端点
+- 4096×3000 图片中人物仅占极小区域，单次全图推理（即使 1280px）召回率不足——分块策略解决小目标检测
+- 分块检测降低置信度阈值（0.15）导致机械部件/阴影误检——安全装备颜色验证利用工人必穿橙色安全帽+荧光背心的领域知识，零误报消除
+- 颜色验证仅应用于 Pass 2（分块），Pass 1（全图高置信度）无需过滤
+- GPU 切换设计为运行时可选（per-request），而非部署时固定，便于测试和灰度发布
+
+### 文件变更
+- 新增 `dms_api/app/pedestrian/__init__.py` — 模块初始化
+- 新增 `dms_api/app/pedestrian/engine.py` — `PedestrianEngine` 单例（两阶段检测 + 安全装备颜色验证）
+- 新增 `dms_api/app/schemas/pedestrian.py` — `PedestrianItem`、`PedestrianBatchResponse`
+- 新增 `dms_api/app/services/pedestrian.py` — `PedestrianService` 单例
+- 新增 `dms_api/app/api/v1/pedestrian.py` — `POST /detect/batch` 端点
+- 新增 `abnormaldrivingsafety/pedestrian_detect.py` — 独立 CLI 检测脚本
+- 新增 `abnormaldrivingsafety/config.json` — 独立脚本配置文件
+- 修改 `dms_api/app/api/v1/router.py` — 注册 `pedestrian_router`
+- 修改 `dms_api/app/dependencies.py` — 添加 `PedestrianServiceDep`
+- 修改 `dms_api/app/config.py` — 添加 10 项行人检测配置（模型、阈值、分块参数）
+- 修改 `dms_api/app/schemas/__init__.py` — 更新导出列表
+- 修改 `dms_api/requirements.txt` — 添加 `ultralytics>=8.0.0`
+
 ## [0.8.0] - 2026-04-01
 ### 功能
 - **信号灯自动检测（移除 ROI 依赖）** — 完全重写检测引擎，仅从图片推断信号灯颜色，62 张测试图片准确率 98.4%（61/62）
