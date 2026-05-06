@@ -1,0 +1,17 @@
+{
+  "model": "yolov8n.pt",
+  "confidence_threshold": 0.25,
+  "iou_threshold": 0.45,
+  "target_classes": ["person"],
+  "image_extensions": [".bmp", ".jpg", ".jpeg", ".png"],
+  "device": "cpu",
+  "primary_imgsz": 1280,
+  "tiling": {
+    "enabled": true,
+    "tile_size": 640,
+    "overlap_ratio": 0.3,
+    "confidence_threshold": 0.15,
+    "imgsz": 640,
+    "nms_iou_threshold": 0.5
+  }
+}
