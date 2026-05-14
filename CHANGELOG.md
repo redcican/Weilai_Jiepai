@@ -1,5 +1,37 @@
 # 更新日志
 
+## [0.10.0] - 2026-05-14
+### 功能
+- **视频车号识别** — `POST /api/v1/train-id/recognize/video` 视频识别端点
+  - 基于 `train_id_ocr_video_paddle_v6.py` 改造集成到 dms_api
+  - PaddleOCR 引擎（英文模型），GPU/CPU 自动切换
+  - 上下分区策略：上半区识别集装箱箱号，下半区识别铁路货车车种/车号
+  - 时序聚合：跨帧去重、碎片拼接、重叠合并
+  - 参数：`interval_sec`（抽帧间隔，默认 0.5s）、`gap_sec`（聚合间隔，默认 3.0s）
+  - 输出：集装箱列表 + 车种列表 + 车号列表（三套独立时序序列）
+- **车板号视频识别** — `POST /api/v1/train-id/recognize/flatcar-video` 车板号识别端点
+  - 基于 `run_bottom_merge_ocr.py` 改造集成到 dms_api
+  - 底部 75%-100% 区域 ROI 裁剪，针对车板号喷涂位置优化
+  - 中文 PaddleOCR（`lang='ch'`），支持中文车型字符识别
+  - 同行框拼接：按 Y 坐标分行，同行内按 X 坐标排序合并，解决长数字串拆框问题
+  - 车型纠错映射：`FLATCAR_CORRECTION` 覆盖 X70/X6K/C70E/C80 等常见车板型号
+  - 车号重叠拼接：跨帧 2-3 框重叠合并，目标 7 位数字
+  - 车种-车号时间窗口配对：按 `start_sec`~`end_sec` 重叠度匹配
+  - 输出：`results` 数组，每条包含 `type`（车型）、`number`（车号）、`frames`、`avgConf`
+- **PaddleOCR 引擎多语言支持** — `video_engine.py` 单例按 `(lang, use_gpu)` 组合缓存
+  - `lang='en'`：集装箱/货车识别（英文数字+字母）
+  - `lang='ch'`：车板号识别（中文字符+数字）
+
+### 文件变更
+- 新增 `dms_api/app/train_id/video_engine.py` — `PaddleOCREngine` 单例，支持 en/ch 双语言
+- 新增 `dms_api/app/train_id/video_processor.py` — `VideoTrainIDProcessor`，集装箱+货车视频处理核心
+- 新增 `dms_api/app/train_id/flatcar_processor.py` — `FlatcarVideoProcessor`，车板号视频处理核心
+- 修改 `dms_api/app/api/v1/train_id.py` — 新增 `/recognize/video` 和 `/recognize/flatcar-video` 端点
+- 修改 `dms_api/app/schemas/train_id.py` — 新增 `VideoTrainIDData`、`VideoTrainIDResponse`、`FlatcarVideoData`、`FlatcarVideoResponse`、`FlatcarItem`
+- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_video()`、`recognize_flatcar_video()`、`get_video_processor()`、`get_flatcar_processor()`
+- 修改 `dms_api/app/train_id/__init__.py` — 导出 `PaddleOCREngine`、`VideoTrainIDProcessor`、`VideoRecognitionResult`、`FlatcarVideoProcessor`、`FlatcarRecognitionResult`
+- 修改 `dms_api/requirements.txt` — 新增 `paddlepaddle>=2.5.0`、`paddleocr>=2.7.0`
+
 ## [0.9.2] - 2026-04-26
 ### 功能
 - **递归扫描子目录** — `signal_detect.py` 默认递归扫描所有包含媒体文件的目录
