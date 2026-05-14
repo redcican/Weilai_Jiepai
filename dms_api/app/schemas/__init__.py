@@ -24,6 +24,8 @@ from .train_id import (
     TrainIDResponse,
     TrainIDBatchItem,
     TrainIDBatchResponse,
+    PaddleImageData,
+    PaddleImageResponse,
 )
 from .signal_light import (
     SignalLightItem,
@@ -60,6 +62,8 @@ __all__ = [
     "TrainIDResponse",
     "TrainIDBatchItem",
     "TrainIDBatchResponse",
+    "PaddleImageData",
+    "PaddleImageResponse",
     # Signal Light
     "SignalLightItem",
     "SignalLightBatchResponse",

@@ -8,15 +8,8 @@ import logging
 from typing import Optional
 
 from ..train_id import TrainIDProcessor, TrainIDResult
-from ..train_id import VideoTrainIDProcessor, VideoRecognitionResult
-from ..train_id import FlatcarVideoProcessor, FlatcarRecognitionResult
-from ..schemas.train_id import (
-    TrainIDData,
-    TrainIDBatchItem,
-    VideoTrainIDData,
-    FlatcarVideoData,
-    FlatcarItem,
-)
+from ..train_id import PaddleImageProcessor
+from ..schemas.train_id import TrainIDData, TrainIDBatchItem, PaddleImageData
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +19,12 @@ class TrainIDService:
     Service for train ID recognition operations.
 
     Uses local CnOCR engine with hybrid detection models for images,
-    and PaddleOCR for video-based recognition.
+    and PaddleOCR for single-image container + train ID recognition.
     Does not require DMS backend — all processing is local.
     """
 
     _processor: Optional[TrainIDProcessor] = None
-    _video_processor: Optional[VideoTrainIDProcessor] = None
-    _flatcar_processor: Optional[FlatcarVideoProcessor] = None
+    _paddle_processor: Optional[PaddleImageProcessor] = None
 
     @classmethod
     def get_processor(cls) -> TrainIDProcessor:
@@ -42,18 +34,11 @@ class TrainIDService:
         return cls._processor
 
     @classmethod
-    def get_video_processor(cls) -> VideoTrainIDProcessor:
-        """Get singleton video processor instance."""
-        if cls._video_processor is None:
-            cls._video_processor = VideoTrainIDProcessor()
-        return cls._video_processor
-
-    @classmethod
-    def get_flatcar_processor(cls) -> FlatcarVideoProcessor:
-        """Get singleton flatcar processor instance."""
-        if cls._flatcar_processor is None:
-            cls._flatcar_processor = FlatcarVideoProcessor()
-        return cls._flatcar_processor
+    def get_paddle_processor(cls) -> PaddleImageProcessor:
+        """Get singleton PaddleOCR image processor instance."""
+        if cls._paddle_processor is None:
+            cls._paddle_processor = PaddleImageProcessor()
+        return cls._paddle_processor
 
     @property
     def available(self) -> bool:
@@ -61,17 +46,12 @@ class TrainIDService:
         return self.get_processor().available
 
     @property
-    def video_available(self) -> bool:
-        """Check if video recognition engine is available."""
-        return self.get_video_processor().available
-
-    @property
-    def flatcar_available(self) -> bool:
-        """Check if flatcar recognition engine is available."""
-        return self.get_flatcar_processor().available
+    def paddle_available(self) -> bool:
+        """Check if PaddleOCR image engine is available."""
+        return self.get_paddle_processor().available
 
     # ------------------------------------------------------------------
-    # Image recognition (existing)
+    # Image recognition (CnOCR, existing)
     # ------------------------------------------------------------------
 
     async def recognize_image(
@@ -122,120 +102,48 @@ class TrainIDService:
         return results
 
     # ------------------------------------------------------------------
-    # Video recognition (container + train)
+    # PaddleOCR single-image recognition (container + train)
     # ------------------------------------------------------------------
 
-    async def recognize_video(
+    async def recognize_paddle_image(
         self,
-        video_bytes: bytes,
+        image_bytes: bytes,
         filename: str = "unknown",
-        interval_sec: float = 0.5,
-        gap_sec: float = 3.0,
-    ) -> VideoTrainIDData:
+    ) -> PaddleImageData:
         """
-        Recognize container IDs and train IDs from a video.
-        """
-        processor = self.get_video_processor()
+        Recognize container IDs and train IDs from a single image using PaddleOCR.
 
-        if not processor.available:
-            logger.error("Video train ID engine (PaddleOCR) not available")
-            return VideoTrainIDData()
-
-        logger.info(
-            f"Processing video: {filename}, size={len(video_bytes)} bytes, "
-            f"interval={interval_sec}s, gap={gap_sec}s"
-        )
-
-        result = processor.process_video_bytes(
-            video_bytes=video_bytes,
-            filename=filename,
-            interval_sec=interval_sec,
-            gap_sec=gap_sec,
-        )
-
-        logger.info(
-            f"Video result: {result.container_count} containers, "
-            f"{result.train_type_count} train types, "
-            f"{result.train_number_count} train numbers, "
-            f"{result.frames_processed} frames processed"
-        )
-
-        return VideoTrainIDData(
-            containers=result.containers,
-            trainTypes=result.train_types,
-            trainNumbers=result.train_numbers,
-            containerCount=result.container_count,
-            trainTypeCount=result.train_type_count,
-            trainNumberCount=result.train_number_count,
-            framesProcessed=result.frames_processed,
-            durationSec=result.duration_sec,
-        )
-
-    # ------------------------------------------------------------------
-    # Flatcar (车板号) video recognition
-    # ------------------------------------------------------------------
-
-    async def recognize_flatcar_video(
-        self,
-        video_bytes: bytes,
-        filename: str = "unknown",
-        interval_sec: float = 0.05,
-        gap_sec: float = 0.15,
-    ) -> FlatcarVideoData:
-        """
-        Recognize flatcar (车板号) type and number from a video.
-
-        Processes only the bottom 75%-100% region of each frame.
-        Uses Chinese PaddleOCR with row-wise box merging.
+        Uses upper/lower split strategy:
+        - Upper half: container IDs
+        - Lower half: train vehicle types and numbers
 
         Args:
-            video_bytes: Raw video file content
+            image_bytes: Raw image file content
             filename: Original filename
-            interval_sec: Frame extraction interval in seconds (default 0.05)
-            gap_sec: Temporal aggregation gap in seconds (default 0.15)
 
         Returns:
-            FlatcarVideoData with type+number pairs
+            PaddleImageData with containers, train_types, train_numbers
         """
-        processor = self.get_flatcar_processor()
+        processor = self.get_paddle_processor()
 
         if not processor.available:
-            logger.error("Flatcar recognition engine (PaddleOCR ch) not available")
-            return FlatcarVideoData()
+            logger.error("PaddleOCR image engine not available")
+            return PaddleImageData()
+
+        logger.info(f"Processing PaddleOCR image: {filename}, size={len(image_bytes)} bytes")
+
+        result = processor.process_bytes(image_bytes)
 
         logger.info(
-            f"Processing flatcar video: {filename}, size={len(video_bytes)} bytes, "
-            f"interval={interval_sec}s, gap={gap_sec}s"
+            f"PaddleOCR result: {len(result['containers'])} containers, "
+            f"{len(result['train_types'])} train types, "
+            f"{len(result['train_numbers'])} train numbers"
         )
 
-        result = processor.process_video_bytes(
-            video_bytes=video_bytes,
-            filename=filename,
-            interval_sec=interval_sec,
-            gap_sec=gap_sec,
-        )
-
-        logger.info(
-            f"Flatcar result: {result.type_count} types, "
-            f"{result.number_count} numbers, "
-            f"{len(result.results)} merged entries, "
-            f"{result.frames_processed} frames processed"
-        )
-
-        return FlatcarVideoData(
-            results=[
-                FlatcarItem(
-                    type=r.get("type"),
-                    number=r.get("number"),
-                    frames=r.get("frames", 0),
-                    avgConf=r.get("avg_conf", 0.0),
-                )
-                for r in result.results
-            ],
-            typeCount=result.type_count,
-            numberCount=result.number_count,
-            framesProcessed=result.frames_processed,
-            durationSec=result.duration_sec,
+        return PaddleImageData(
+            containers=result["containers"],
+            trainTypes=result["train_types"],
+            trainNumbers=result["train_numbers"],
         )
 
 

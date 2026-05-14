@@ -85,3 +85,13 @@ class PaddleOCREngine:
         except Exception as e:
             logger.warning(f"PaddleOCR ({self._lang}) recognition failed: {e}")
             return None
+
+    def ocr(self, img, cls=True):
+        """Run OCR on a numpy array image."""
+        if not self._available or self.ocr is None:
+            return None
+        try:
+            return self.ocr.ocr(img, cls=cls)
+        except Exception as e:
+            logger.warning(f"PaddleOCR ({self._lang}) OCR failed: {e}")
+            return None

@@ -1,5 +1,26 @@
 # 更新日志
 
+## [0.10.1] - 2026-05-14
+### 功能
+- **单图 PaddleOCR 识别** — `POST /api/v1/train-id/recognize/paddle` 单图识别端点
+  - 基于 `train_id_ocr_video_paddle_v6.py` 改造为单图版 `train_id_ocr_paddle.py`
+  - 复用 `PaddleOCREngine` 单例（`lang='en'`），GPU/CPU 自动切换
+  - 上下分区策略：上半区（约55%）识别集装箱箱号，下半区识别铁路货车车种/车号
+  - 输出：集装箱列表 + 车种列表 + 车号列表（简洁字符串列表，无置信度）
+- **视频接口下线（代码保留）** — `/recognize/video` 和 `/recognize/flatcar-video` 端点已注释移除
+  - 视频相关处理代码保留在 `video_processor.py`、`flatcar_processor.py` 中（注释状态）
+  - 日后如需恢复可直接取消注释
+
+### 文件变更
+- 新增 `train_id_ocr/train_id_ocr_paddle.py` — 单图版 PaddleOCR CLI 工具（视频代码注释保留）
+- 新增 `dms_api/app/train_id/paddle_image_processor.py` — `PaddleImageProcessor` 单图处理核心
+- 修改 `dms_api/app/api/v1/train_id.py` — 新增 `/recognize/paddle`，注释移除 `/recognize/video` 和 `/recognize/flatcar-video`
+- 修改 `dms_api/app/schemas/train_id.py` — 新增 `PaddleImageData`、`PaddleImageResponse`，注释移除视频相关 schema
+- 修改 `dms_api/app/schemas/__init__.py` — 导出 `PaddleImageData`、`PaddleImageResponse`
+- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_paddle_image()`，注释移除视频相关方法
+- 修改 `dms_api/app/train_id/__init__.py` — 导出 `PaddleImageProcessor`
+- 修改 `dms_api/app/train_id/video_engine.py` — 新增 `ocr(img, cls=True)` 支持 numpy array 直接输入
+
 ## [0.10.0] - 2026-05-14
 ### 功能
 - **视频车号识别** — `POST /api/v1/train-id/recognize/video` 视频识别端点
