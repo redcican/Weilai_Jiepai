@@ -93,6 +93,29 @@ class PaddleImageResponse(ResponseSchema[PaddleImageData]):
 
 
 # ---------------------------------------------------------------------------
+# Flatcar single-image recognition schemas
+# ---------------------------------------------------------------------------
+
+class FlatcarImageData(BaseSchema):
+    """Recognized data from single-image flatcar processing."""
+
+    types: list[str] = Field(
+        default_factory=list,
+        description="Flatcar vehicle types (车型), e.g. X70, C70E",
+    )
+    numbers: list[str] = Field(
+        default_factory=list,
+        description="Flatcar vehicle numbers (车号)",
+    )
+
+
+class FlatcarImageResponse(ResponseSchema[FlatcarImageData]):
+    """Response for flatcar single-image recognition."""
+
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Video recognition schemas (deprecated, kept for reference)
 # ---------------------------------------------------------------------------
 # class VideoTrainIDData(BaseSchema): ...

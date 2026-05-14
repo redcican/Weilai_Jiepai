@@ -7,6 +7,12 @@
   - 复用 `PaddleOCREngine` 单例（`lang='en'`），GPU/CPU 自动切换
   - 上下分区策略：上半区（约55%）识别集装箱箱号，下半区识别铁路货车车种/车号
   - 输出：集装箱列表 + 车种列表 + 车号列表（简洁字符串列表，无置信度）
+- **单图板车识别** — `POST /api/v1/train-id/recognize/flatcar` 板车单图识别端点
+  - 基于 `flatcar_processor.py` 改造为单图版 `flatcar_image_processor.py`
+  - 底部区域提取（75%-100% 高度），暗光预处理（LAB 空间 CLAHE）
+  - 中文 PaddleOCR（`lang='ch'`），同行框拼接解决长数字串拆框问题
+  - 车型纠错映射：`FLATCAR_CORRECTION` 覆盖 X70/X6K/C70E/C80 等
+  - 输出：车型列表 + 车号列表（简洁字符串列表，无置信度）
 - **视频接口下线（代码保留）** — `/recognize/video` 和 `/recognize/flatcar-video` 端点已注释移除
   - 视频相关处理代码保留在 `video_processor.py`、`flatcar_processor.py` 中（注释状态）
   - 日后如需恢复可直接取消注释
@@ -14,11 +20,12 @@
 ### 文件变更
 - 新增 `train_id_ocr/train_id_ocr_paddle.py` — 单图版 PaddleOCR CLI 工具（视频代码注释保留）
 - 新增 `dms_api/app/train_id/paddle_image_processor.py` — `PaddleImageProcessor` 单图处理核心
-- 修改 `dms_api/app/api/v1/train_id.py` — 新增 `/recognize/paddle`，注释移除 `/recognize/video` 和 `/recognize/flatcar-video`
-- 修改 `dms_api/app/schemas/train_id.py` — 新增 `PaddleImageData`、`PaddleImageResponse`，注释移除视频相关 schema
-- 修改 `dms_api/app/schemas/__init__.py` — 导出 `PaddleImageData`、`PaddleImageResponse`
-- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_paddle_image()`，注释移除视频相关方法
-- 修改 `dms_api/app/train_id/__init__.py` — 导出 `PaddleImageProcessor`
+- 新增 `dms_api/app/train_id/flatcar_image_processor.py` — `FlatcarImageProcessor` 单图处理核心
+- 修改 `dms_api/app/api/v1/train_id.py` — 新增 `/recognize/paddle` 和 `/recognize/flatcar`，注释移除 `/recognize/video` 和 `/recognize/flatcar-video`
+- 修改 `dms_api/app/schemas/train_id.py` — 新增 `PaddleImageData`、`PaddleImageResponse`、`FlatcarImageData`、`FlatcarImageResponse`，注释移除视频相关 schema
+- 修改 `dms_api/app/schemas/__init__.py` — 导出新增 schema
+- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_paddle_image()`、`recognize_flatcar_image()`，注释移除视频相关方法
+- 修改 `dms_api/app/train_id/__init__.py` — 导出 `PaddleImageProcessor`、`FlatcarImageProcessor`
 - 修改 `dms_api/app/train_id/video_engine.py` — 新增 `ocr(img, cls=True)` 支持 numpy array 直接输入
 
 ## [0.10.0] - 2026-05-14

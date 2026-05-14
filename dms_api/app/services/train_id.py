@@ -8,8 +8,8 @@ import logging
 from typing import Optional
 
 from ..train_id import TrainIDProcessor, TrainIDResult
-from ..train_id import PaddleImageProcessor
-from ..schemas.train_id import TrainIDData, TrainIDBatchItem, PaddleImageData
+from ..train_id import PaddleImageProcessor, FlatcarImageProcessor
+from ..schemas.train_id import TrainIDData, TrainIDBatchItem, PaddleImageData, FlatcarImageData
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ class TrainIDService:
 
     _processor: Optional[TrainIDProcessor] = None
     _paddle_processor: Optional[PaddleImageProcessor] = None
+    _flatcar_processor: Optional[FlatcarImageProcessor] = None
 
     @classmethod
     def get_processor(cls) -> TrainIDProcessor:
@@ -40,6 +41,13 @@ class TrainIDService:
             cls._paddle_processor = PaddleImageProcessor()
         return cls._paddle_processor
 
+    @classmethod
+    def get_flatcar_processor(cls) -> FlatcarImageProcessor:
+        """Get singleton flatcar image processor instance."""
+        if cls._flatcar_processor is None:
+            cls._flatcar_processor = FlatcarImageProcessor()
+        return cls._flatcar_processor
+
     @property
     def available(self) -> bool:
         """Check if train ID engine is available."""
@@ -49,6 +57,11 @@ class TrainIDService:
     def paddle_available(self) -> bool:
         """Check if PaddleOCR image engine is available."""
         return self.get_paddle_processor().available
+
+    @property
+    def flatcar_available(self) -> bool:
+        """Check if flatcar image engine is available."""
+        return self.get_flatcar_processor().available
 
     # ------------------------------------------------------------------
     # Image recognition (CnOCR, existing)
@@ -144,6 +157,48 @@ class TrainIDService:
             containers=result["containers"],
             trainTypes=result["train_types"],
             trainNumbers=result["train_numbers"],
+        )
+
+    # ------------------------------------------------------------------
+    # Flatcar single-image recognition (bottom region)
+    # ------------------------------------------------------------------
+
+    async def recognize_flatcar_image(
+        self,
+        image_bytes: bytes,
+        filename: str = "unknown",
+    ) -> FlatcarImageData:
+        """
+        Recognize flatcar type and number from a single image using PaddleOCR (ch).
+
+        Uses bottom region extraction (75%-100% height) with dark scene preprocessing
+        and row-wise box merging for split digit strings.
+
+        Args:
+            image_bytes: Raw image file content
+            filename: Original filename
+
+        Returns:
+            FlatcarImageData with types and numbers
+        """
+        processor = self.get_flatcar_processor()
+
+        if not processor.available:
+            logger.error("Flatcar image engine not available")
+            return FlatcarImageData()
+
+        logger.info(f"Processing flatcar image: {filename}, size={len(image_bytes)} bytes")
+
+        result = processor.process_bytes(image_bytes)
+
+        logger.info(
+            f"Flatcar result: {len(result['types'])} types, "
+            f"{len(result['numbers'])} numbers"
+        )
+
+        return FlatcarImageData(
+            types=result["types"],
+            numbers=result["numbers"],
         )
 
 

@@ -14,6 +14,7 @@ from .engine import TrainIDEngine
 from .processor import TrainIDProcessor
 from .video_engine import PaddleOCREngine
 from .paddle_image_processor import PaddleImageProcessor
+from .flatcar_image_processor import FlatcarImageProcessor
 
 __all__ = [
     "OCRBox",
@@ -22,4 +23,5 @@ __all__ = [
     "TrainIDProcessor",
     "PaddleOCREngine",
     "PaddleImageProcessor",
+    "FlatcarImageProcessor",
 ]

@@ -16,6 +16,7 @@ from ...schemas.train_id import (
     TrainIDBatchResponse,
     TrainIDBatchItem,
     PaddleImageResponse,
+    FlatcarImageResponse,
 )
 from ...services.train_id import get_train_id_service_singleton
 
@@ -187,6 +188,56 @@ async def recognize_paddle_image(
 
     except Exception as e:
         logger.error(f"PaddleOCR image recognition error: {e}")
+        return _get_error_response(str(e), endpoint=endpoint)
+
+
+@router.post(
+    "/recognize/flatcar",
+    response_model=FlatcarImageResponse,
+    responses={
+        200: {"description": "Flatcar recognized successfully"},
+        400: {"description": "Invalid image format"},
+        422: {"description": "OCR processing failed"},
+        503: {"description": "Engine not available"},
+    },
+    summary="识别单张板车图片（PaddleOCR 车型/车号）",
+    description="""
+    上传一张板车（车板号）图片，使用 PaddleOCR 中文引擎识别车型和车号。
+
+    **识别策略：**
+    - 底部区域（75%-100% 高度）：针对车板号喷涂位置优化
+    - 暗光预处理：LAB 空间 CLAHE 增强
+    - 同行框拼接：按 Y 坐标分行，同行内按 X 坐标排序合并
+
+    **适用场景：** 板车底部车号识别
+    """,
+)
+async def recognize_flatcar_image(
+    image: UploadFile = File(..., description="板车图片文件"),
+) -> FlatcarImageResponse | JSONResponse:
+    """Recognize flatcar type and number from a single image using PaddleOCR (ch)."""
+    service = get_train_id_service_singleton()
+    endpoint = "/api/v1/train-id/recognize/flatcar"
+
+    if not service.flatcar_available:
+        return _get_error_response(
+            "Flatcar image engine not available",
+            status_code=503,
+            endpoint=endpoint,
+        )
+
+    try:
+        image_bytes = await image.read()
+        data = await service.recognize_flatcar_image(image_bytes, image.filename)
+
+        return FlatcarImageResponse(
+            success=True,
+            message="Flatcar recognized successfully",
+            data=data,
+        )
+
+    except Exception as e:
+        logger.error(f"Flatcar recognition error: {e}")
         return _get_error_response(str(e), endpoint=endpoint)
 
 
