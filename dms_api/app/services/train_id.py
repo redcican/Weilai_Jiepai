@@ -16,8 +16,9 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from train_id_ocr.train_id_ocr_paddle import PaddleOCRProcessor, ImageResult
+from train_id_ocr.run_bottom_merge_ocr import FlatcarBottomProcessor
 
-from ..schemas.train_id import TrainIDData, TrainIDBatchItem
+from ..schemas.train_id import TrainIDData, TrainIDBatchItem, FlatcarData
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class TrainIDService:
     """
 
     _ocr_processor: Optional[PaddleOCRProcessor] = None
+    _flatcar_processor: Optional[FlatcarBottomProcessor] = None
 
     @classmethod
     def get_ocr_processor(cls) -> PaddleOCRProcessor:
@@ -39,10 +41,22 @@ class TrainIDService:
             cls._ocr_processor = PaddleOCRProcessor()
         return cls._ocr_processor
 
+    @classmethod
+    def get_flatcar_processor(cls) -> FlatcarBottomProcessor:
+        """Get singleton flatcar bottom processor instance (from run_bottom_merge_ocr)."""
+        if cls._flatcar_processor is None:
+            cls._flatcar_processor = FlatcarBottomProcessor()
+        return cls._flatcar_processor
+
     @property
     def available(self) -> bool:
         """Check if train ID engine is available."""
         return self.get_ocr_processor().ocr is not None
+
+    @property
+    def flatcar_available(self) -> bool:
+        """Check if flatcar engine is available."""
+        return self.get_flatcar_processor().available
 
     # ------------------------------------------------------------------
     # Single image recognition
@@ -116,6 +130,43 @@ class TrainIDService:
                 confidence=data.confidence,
             ))
         return results
+
+    # ------------------------------------------------------------------
+    # Flatcar single-image recognition (bottom region)
+    # ------------------------------------------------------------------
+
+    async def recognize_flatcar_image(
+        self,
+        image_bytes: bytes,
+        filename: str = "unknown",
+    ) -> FlatcarData:
+        """
+        Recognize flatcar type and number from a single image.
+
+        使用 run_bottom_merge_ocr.py 的 FlatcarBottomProcessor，
+        底部区域（75%-100% 高度）+ 暗光增强 + 同行框拼接。
+        """
+        processor = self.get_flatcar_processor()
+
+        if not processor.available:
+            logger.error("Flatcar engine not available")
+            return FlatcarData()
+
+        logger.info(f"Processing flatcar image: {filename}, size={len(image_bytes)} bytes")
+
+        result = processor.process_bytes(image_bytes)
+
+        logger.info(
+            f"Flatcar result: type='{result['vehicleType']}' "
+            f"number='{result['vehicleNumber']}' "
+            f"confidence={result['confidence']:.3f}"
+        )
+
+        return FlatcarData(
+            vehicleType=result["vehicleType"],
+            vehicleNumber=result["vehicleNumber"],
+            confidence=result["confidence"],
+        )
 
 
 # Singleton instance

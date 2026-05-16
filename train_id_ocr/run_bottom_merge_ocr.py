@@ -284,6 +284,103 @@ def draw_merged_results(img, merged_rows):
 
     return viz
 
+class FlatcarBottomProcessor:
+    """平板车底部区域单图处理器（基于同行框拼接）。"""
+
+    def __init__(self):
+        self.ocr = None
+        try:
+            self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=False)
+        except Exception as e:
+            print(f"ERROR: PaddleOCR init failed: {e}")
+
+    @property
+    def available(self) -> bool:
+        return self.ocr is not None
+
+    def process_bytes(self, image_bytes: bytes) -> dict:
+        """Process raw image bytes and return flatcar type + number.
+
+        Returns:
+            {
+                "vehicleType": "X70",
+                "vehicleNumber": "5240903",
+                "confidence": 0.92,
+            }
+        """
+        if self.ocr is None:
+            return {"vehicleType": "", "vehicleNumber": "", "confidence": 0.0}
+
+        img_array = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is None:
+            return {"vehicleType": "", "vehicleNumber": "", "confidence": 0.0}
+
+        h, w = img.shape[:2]
+        y1 = int(h * BOTTOM_Y_START)
+        y2 = int(h * BOTTOM_Y_END)
+        bottom_roi = img[y1:y2, :]
+
+        enhanced = preprocess_for_dark(bottom_roi)
+        ocr_result = self.ocr.ocr(enhanced, cls=True)
+
+        # 收集原始检测框
+        raw_texts = []
+        if ocr_result and ocr_result[0]:
+            for line in ocr_result[0]:
+                if not line:
+                    continue
+                raw_texts.append((line[1][0], line[1][1], line[0]))
+
+        # 同行拼接
+        merged_rows = merge_boxes_by_row(raw_texts, y_tolerance=50)
+
+        # 提取候选
+        type_candidates, num_candidates = extract_candidates(merged_rows)
+
+        # 选最佳车型
+        vehicle_type = ""
+        type_conf = 0.0
+        if type_candidates:
+            cnt = Counter([t for t, _ in type_candidates])
+            vehicle_type = cnt.most_common(1)[0][0]
+            type_conf = sum(c for t, c in type_candidates if t == vehicle_type) / len([1 for t, _ in type_candidates if t == vehicle_type])
+
+        # 选最佳车号（优先7位，否则最长）
+        vehicle_number = ""
+        num_conf = 0.0
+        if num_candidates:
+            by_len = defaultdict(list)
+            for n, c in num_candidates:
+                by_len[len(n)].append((n, c))
+            if 7 in by_len:
+                candidates = by_len[7]
+                weighted = defaultdict(float)
+                for n, c in candidates:
+                    weighted[n] += c
+                vehicle_number = max(weighted.keys(), key=lambda k: weighted[k])
+                num_conf = weighted[vehicle_number] / len(candidates)
+            else:
+                max_len = max(len(n) for n, _ in num_candidates)
+                candidates = [(n, c) for n, c in num_candidates if len(n) == max_len]
+                cnt = Counter([n for n, _ in candidates])
+                vehicle_number = cnt.most_common(1)[0][0]
+                num_conf = sum(c for n, c in candidates if n == vehicle_number) / len([1 for n, _ in candidates if n == vehicle_number])
+
+        confs = []
+        if vehicle_type:
+            confs.append(type_conf)
+        if vehicle_number:
+            confs.append(num_conf)
+        avg_conf = round(sum(confs) / len(confs), 4) if confs else 0.0
+
+        return {
+            "vehicleType": vehicle_type,
+            "vehicleNumber": vehicle_number,
+            "confidence": avg_conf,
+        }
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     viz_dir = os.path.join(OUTPUT_DIR, "_viz")
@@ -293,208 +390,35 @@ def main():
     frames, fps = extract_frames(VIDEO_PATH, INTERVAL_SEC)
     print(f"    共 {len(frames)} 帧")
 
-    print("[2/3] 初始化 PaddleOCR (ch, CPU)...")
-    ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=False)
+    print("[2/3] 初始化 FlatcarBottomProcessor...")
+    processor = FlatcarBottomProcessor()
     print("    完成")
 
     print("[3/3] 底部区域 OCR + 同行拼接 + 可视化...")
     results = []
 
     for i, (t, frame) in enumerate(frames):
-        h, w = frame.shape[:2]
-        y1 = int(h * BOTTOM_Y_START)
-        y2 = int(h * BOTTOM_Y_END)
-        bottom_roi = frame[y1:y2, :]
-
-        enhanced = preprocess_for_dark(bottom_roi)
-        ocr_result = ocr.ocr(enhanced, cls=True)
-
-        # 收集原始检测框
-        raw_texts = []
-        if ocr_result and ocr_result[0]:
-            for line in ocr_result[0]:
-                if not line: continue
-                raw_texts.append((line[1][0], line[1][1], line[0]))
-
-        # 同行拼接
-        merged_rows = merge_boxes_by_row(raw_texts, y_tolerance=50)
-
-        # 提取候选
-        type_candidates, num_candidates = extract_candidates(merged_rows)
-
-        # 画可视化
-        viz = draw_merged_results(bottom_roi, merged_rows)
-
-        # 保存
-        out_path = os.path.join(viz_dir, f"viz_{t:07.2f}.jpg")
-        cv2.imwrite(out_path, viz)
-
-        # 记录
-        text_details = []
-        for mt, mc, mb, raw in merged_rows:
-            adjusted_box = [[p[0], p[1] + y1] for p in mb]
-            text_details.append({
-                "merged_text": mt,
-                "conf": round(mc, 4),
-                "box": adjusted_box,
-                "raw_boxes": len(raw),
-            })
+        import io
+        _, buf = cv2.imencode('.jpg', frame)
+        result = processor.process_bytes(buf.tobytes())
 
         results.append({
             "timestamp_sec": t,
             "timestamp": format_ts(t),
-            "merged_rows": [(mt, round(mc, 4)) for mt, mc, _, _ in merged_rows],
-            "type_candidates": type_candidates,
-            "num_candidates": num_candidates,
+            "result": result,
         })
 
         if i % 50 == 0 or i == len(frames) - 1:
-            preview = ', '.join([mt for mt, _, _, _ in merged_rows[:2]]) if merged_rows else '(none)'
-            print(f"    [{i+1}/{len(frames)}] rows={len(merged_rows)} types={len(type_candidates)} nums={len(num_candidates)} | {preview}")
+            print(f"    [{i+1}/{len(frames)}] type={result['vehicleType']} num={result['vehicleNumber']} conf={result['confidence']}")
 
-    # 时序聚合：车型和车号分别独立聚合
-    print("[4/4] 时序聚合...")
-    gap_sec = 0.15
-    
-    # 车型序列：只看有 type_candidates 的帧
-    type_sequences = []
-    current = None
-    for r in results:
-        if not r["type_candidates"]: continue
-        if current is None or r["timestamp_sec"] - current[-1]["timestamp_sec"] > gap_sec:
-            if current: type_sequences.append(current)
-            current = [r]
-        else:
-            current.append(r)
-    if current: type_sequences.append(current)
-    
-    # 车号序列：有3位及以上数字的帧都纳入（支持跨帧拼接）
-    num_sequences = []
-    current = None
-    for r in results:
-        has_digit = any(len(n) >= 3 for n, c in r["num_candidates"])
-        if not has_digit: continue
-        if current is None or r["timestamp_sec"] - current[-1]["timestamp_sec"] > gap_sec:
-            if current: num_sequences.append(current)
-            current = [r]
-        else:
-            current.append(r)
-    if current: num_sequences.append(current)
-
-    type_seqs = []
-    for seq_idx, seq in enumerate(type_sequences, 1):
-        types = [(t, c) for r in seq for t, c in r["type_candidates"]]
-        cnt = Counter([t for t, _ in types])
-        type_id = cnt.most_common(1)[0][0]
-        type_conf = sum(c for t, c in types if t == type_id) / len([1 for t, _ in types if t == type_id])
-        type_seqs.append({
-            "index": seq_idx,
-            "start_time": seq[0]["timestamp"],
-            "end_time": seq[-1]["timestamp"],
-            "start_sec": seq[0]["timestamp_sec"],
-            "end_sec": seq[-1]["timestamp_sec"],
-            "frames_count": len(seq),
-            "avg_conf": round(type_conf, 4),
-            "id": type_id,
-        })
-
-    num_seqs = []
-    for seq_idx, seq in enumerate(num_sequences, 1):
-        nums = [(n, c) for r in seq for n, c in r["num_candidates"] if len(n) >= 3]
-        num_id = None; num_conf = 0.0
-        by_len = defaultdict(list)
-        for n, c in nums: by_len[len(n)].append((n, c))
-        if 7 in by_len:
-            candidates = [(n, c) for n, c in by_len[7] if c >= 0.95]
-            if not candidates:
-                candidates = by_len[7]
-            weighted = defaultdict(float)
-            for n, c in candidates:
-                weighted[n] += c
-            num_id = max(weighted.keys(), key=lambda k: weighted[k])
-            num_conf = weighted[num_id] / len(candidates)
-        else:
-            # 尝试跨帧重叠拼接
-            num_id, num_conf = merge_numbers_by_overlap(nums, target_len=7, min_overlap=2)
-            if num_id is None:
-                for target_len in [6, 5, 8, 4, 3]:
-                    if target_len in by_len:
-                        candidates = by_len[target_len]
-                        cnt = Counter([n for n, _ in candidates])
-                        num_id = cnt.most_common(1)[0][0]
-                        num_conf = sum(c for n, c in candidates if n == num_id) / len([1 for n, _ in candidates if n == num_id])
-                        break
-        if num_id:
-            num_seqs.append({
-                "index": seq_idx,
-                "start_time": seq[0]["timestamp"],
-                "end_time": seq[-1]["timestamp"],
-                "start_sec": seq[0]["timestamp_sec"],
-                "end_sec": seq[-1]["timestamp_sec"],
-                "frames_count": len(seq),
-                "avg_conf": round(num_conf, 4),
-                "id": num_id,
-            })
-
-    # 过滤：只保留7位数字车号，置信度≥0.90（705黑名单已删除，依靠车型剥离机制）
-    filtered_nums = [s for s in num_seqs 
-                     if len(s['id']) == 7 
-                     and s['avg_conf'] >= 0.90]
-
-    # 合并车型和车号为单个JSON
-    merged_results = []
-    used_num_indices = set()
-    
-    for t in type_seqs:
-        t_start, t_end = t['start_sec'], t['end_sec']
-        best_match = None
-        best_overlap = -1
-        for n in filtered_nums:
-            n_start, n_end = n['start_sec'], n['end_sec']
-            # 单帧也算：只要时间窗口有交集（含边界接触）即可配对
-            if max(t_start, n_start) <= min(t_end, n_end):
-                overlap = min(t_end, n_end) - max(t_start, n_start)
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_match = n
-        
-        entry = {
-            "index": len(merged_results) + 1,
-            "type": t['id'],
-            "num": best_match['id'] if best_match else None,
-            "frames": best_match['frames_count'] if best_match else t['frames_count'],
-            "avg_conf": round(best_match['avg_conf'], 4) if best_match else round(t['avg_conf'], 4),
-        }
-        if best_match:
-            used_num_indices.add(best_match['index'])
-        merged_results.append(entry)
-    
-    # 未配对的车号也加上
-    for n in filtered_nums:
-        if n['index'] not in used_num_indices:
-            merged_results.append({
-                "index": len(merged_results) + 1,
-                "type": None,
-                "num": n['id'],
-                "frames": n['frames_count'],
-                "avg_conf": round(n['avg_conf'], 4),
-            })
-
-    with open(os.path.join(OUTPUT_DIR, "sequence.json"), 'w', encoding='utf-8') as f:
-        json.dump(merged_results, f, ensure_ascii=False, indent=2)
-    with open(os.path.join(OUTPUT_DIR, "frame_sequence.json"), 'w', encoding='utf-8') as f:
+    with open(os.path.join(OUTPUT_DIR, "frame_results.json"), 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
     print("\n" + "="*60)
-    print(f"车型: {len(type_seqs)} 个, 车号(原始): {len(num_seqs)} 个, 车号(过滤后): {len(filtered_nums)} 个")
-    print(f"合并结果: {len(merged_results)} 条")
-    for s in merged_results:
-        type_str = s['type'] if s['type'] else '(无车型)'
-        num_str = s['num'] if s['num'] else '(无车号)'
-        print(f"  [{s['index']}] {type_str} {num_str} conf={s['avg_conf']} frames={s['frames']}")
-    print(f"可视化保存在: {viz_dir}/")
-    print(f"合并JSON: {OUTPUT_DIR}/sequence.json")
+    print(f"共处理 {len(results)} 帧")
+    print(f"结果保存在: {OUTPUT_DIR}/frame_results.json")
     print("="*60)
+
 
 if __name__ == "__main__":
     main()

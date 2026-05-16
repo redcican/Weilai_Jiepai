@@ -72,6 +72,35 @@ class TrainIDBatchResponse(ResponseSchema[list[TrainIDBatchItem]]):
 
 
 # ---------------------------------------------------------------------------
+# Flatcar single-image recognition schemas
+# ---------------------------------------------------------------------------
+
+class FlatcarData(BaseSchema):
+    """Recognized data from flatcar bottom-region processing."""
+
+    vehicle_type: str = Field(
+        default="",
+        alias="vehicleType",
+        description="Flatcar vehicle type (车型), e.g. X70, C70E",
+    )
+    vehicle_number: str = Field(
+        default="",
+        alias="vehicleNumber",
+        description="Flatcar vehicle number (车号)",
+    )
+    confidence: float = Field(
+        default=0.0,
+        description="Average OCR confidence score",
+    )
+
+
+class FlatcarResponse(ResponseSchema[FlatcarData]):
+    """Response for flatcar single-image recognition."""
+
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Video recognition schemas (deprecated, kept for reference)
 # ---------------------------------------------------------------------------
 # class VideoTrainIDData(BaseSchema): ...
