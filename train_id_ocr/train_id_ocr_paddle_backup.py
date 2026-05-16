@@ -19,11 +19,10 @@ import re
 import json
 import argparse
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Dict, Union
+from typing import List, Optional, Tuple, Dict
 from collections import Counter
 from itertools import combinations
 from pathlib import Path
-from enum import Enum
 
 import cv2
 import numpy as np
@@ -55,149 +54,6 @@ COMMON_PREFIXES = {
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 
 
-# ============ 空挡检测器（不训练，纯 CV）============
-
-class GapType(Enum):
-    """空挡检测结果类型"""
-    GAP = "gap"
-    NORMAL = "normal"
-    TRANSITION = "transition"
-
-
-@dataclass
-class GapResult:
-    """空挡检测结果"""
-    gap_type: GapType
-    vert_edge_ratio: float
-    center_std: float
-    score: float
-
-
-class GapDetector:
-    """
-    空挡检测器 - 严格多条件组合版 (方案B)
-
-    核心原理：车厢连接处的空挡区域同时满足多个图像特征：
-      1. 中间有竖直金属结构（梯子/栏杆）-> 竖直边缘密度高
-      2. 背景有开口和灯光 -> CLAHE后低梯度占比适中（不太高）
-      3. 灯光可见 -> 亮斑连通域存在
-      4. 不是黄色/白色机车侧面 -> 平均亮度不太高
-    """
-
-    def __init__(
-        self,
-        roi_x: Tuple[float, float] = (0.45, 0.55),
-        roi_y: Tuple[float, float] = (0.2, 0.9),
-        # 方案A 参数（兼容旧版）
-        edge_thresh: int = 50,
-        gap_thresh: float = 0.018,
-        normal_thresh: float = 0.005,
-        # 方案B 严格组合参数
-        strict_mode: bool = True,
-        min_vert_ratio: float = 0.015,
-        max_low_grad_ratio: float = 0.75,
-        max_brightness: float = 140.0,
-        min_bright_blob_ratio: float = 0.02,
-    ):
-        self.roi_x = roi_x
-        self.roi_y = roi_y
-        self.edge_thresh = edge_thresh
-        self.gap_thresh = gap_thresh
-        self.normal_thresh = normal_thresh
-        self.strict_mode = strict_mode
-        # 严格组合：避免将正常车厢误判为空挡
-        self.min_vert_ratio = min_vert_ratio
-        self.max_low_grad_ratio = max_low_grad_ratio
-        self.max_brightness = max_brightness
-        self.min_bright_blob_ratio = min_bright_blob_ratio
-
-    def _extract_roi(self, gray: np.ndarray) -> np.ndarray:
-        h, w = gray.shape
-        x1 = int(w * self.roi_x[0])
-        x2 = int(w * self.roi_x[1])
-        y1 = int(h * self.roi_y[0])
-        y2 = int(h * self.roi_y[1])
-        return gray[y1:y2, x1:x2]
-
-    def _compute_vert_edge_ratio(self, roi: np.ndarray) -> float:
-        if roi.size == 0:
-            return 0.0
-        sobel_x = cv2.Sobel(roi, cv2.CV_64F, 1, 0, ksize=3)
-        mag = np.abs(sobel_x)
-        strong_pixels = np.sum(mag > self.edge_thresh)
-        return float(strong_pixels / mag.size)
-
-    def _compute_std(self, roi: np.ndarray) -> float:
-        return float(np.std(roi))
-
-    def _compute_low_grad_ratio(self, roi: np.ndarray) -> float:
-        """CLAHE后梯度<20的像素占比"""
-        if roi.size == 0:
-            return 1.0
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        roi_clahe = clahe.apply(roi)
-        grad_x = cv2.Sobel(roi_clahe, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(roi_clahe, cv2.CV_64F, 0, 1, ksize=3)
-        grad_mag = np.sqrt(grad_x**2 + grad_y**2)
-        return float(np.sum(grad_mag < 20) / grad_mag.size)
-
-    def _compute_bright_blob_ratio(self, roi: np.ndarray, thresh: int = 220) -> float:
-        """亮斑最大连通域占比"""
-        if roi.size == 0:
-            return 0.0
-        _, binary = cv2.threshold(roi, thresh, 255, cv2.THRESH_BINARY)
-        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-        max_area = 0
-        for i in range(1, num_labels):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area >= 10 and area > max_area:
-                max_area = area
-        return float(max_area / roi.size) if roi.size > 0 else 0.0
-
-    def detect(self, image: Union[np.ndarray, str, Path]) -> GapResult:
-        if isinstance(image, (str, Path)):
-            data = np.fromfile(str(image), dtype=np.uint8)
-            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            if img is None:
-                return GapResult(GapType.TRANSITION, 0.0, 0.0, 0.0)
-        else:
-            img = image
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-        roi = self._extract_roi(gray)
-        vert_ratio = self._compute_vert_edge_ratio(roi)
-        center_std = self._compute_std(roi)
-
-        if self.strict_mode:
-            # 方案B: 严格多条件组合
-            low_grad_ratio = self._compute_low_grad_ratio(roi)
-            bright_blob_ratio = self._compute_bright_blob_ratio(roi)
-            brightness_mean = float(np.mean(roi))
-
-            is_gap = (
-                vert_ratio > self.min_vert_ratio and
-                low_grad_ratio < self.max_low_grad_ratio and
-                brightness_mean < self.max_brightness and
-                bright_blob_ratio > self.min_bright_blob_ratio
-            )
-
-            gap_type = GapType.GAP if is_gap else GapType.NORMAL
-            # 综合评分：基于 vert_ratio 的 sigmoid，仅用于调试参考
-            score = 1.0 / (1.0 + np.exp(-200 * (vert_ratio - 0.01)))
-            return GapResult(gap_type, vert_ratio, center_std, round(score, 4))
-        else:
-            # 方案A: 仅竖直边缘密度
-            if vert_ratio >= self.gap_thresh:
-                gap_type = GapType.GAP
-            elif vert_ratio <= self.normal_thresh:
-                gap_type = GapType.NORMAL
-            else:
-                gap_type = GapType.TRANSITION
-
-            score = 1.0 / (1.0 + np.exp(-200 * (vert_ratio - 0.01)))
-            return GapResult(gap_type, vert_ratio, center_std, round(score, 4))
-
-
 # ============ CnOCR 版字符混淆表（车种纠错用）============
 _LETTER_TO_DIGIT = str.maketrans({
     "O": "0", "o": "0", "Q": "0", "D": "0",
@@ -222,14 +78,6 @@ _DIGIT_TO_LETTER = str.maketrans({
 
 
 @dataclass
-class OCRBox:
-    """Single OCR detection (aligned with CnOCR version)."""
-    box: List[int]      # [x_min, y_min, x_max, y_max]
-    text: str
-    confidence: float
-
-
-@dataclass
 class TextBox:
     text: str
     conf: float
@@ -245,7 +93,6 @@ class ImageResult:
     containers: List[Tuple[str, float]] = field(default_factory=list)
     train_types: List[Tuple[str, float]] = field(default_factory=list)
     train_numbers: List[Tuple[str, float]] = field(default_factory=list)
-    is_gap: bool = False  # 标记是否为空挡帧
 
 
 # ============ 工具函数 ============
@@ -442,32 +289,35 @@ def is_train_param(text: str) -> bool:
 
 
 # ============ OCR 框解析（上下分区 + 中文过滤）============
-def parse_ocr_boxes(ocr_boxes: List[OCRBox], img_height: int) -> Tuple[List[TextBox], List[TextBox]]:
-    """解析 OCR 框列表，按 y 坐标分上半区(集装箱)/下半区(铁路货车)，过滤纯中文。"""
+def parse_ocr_boxes(result, img_height: int) -> Tuple[List[TextBox], List[TextBox]]:
+    """解析OCR结果，按y坐标分上半区(集装箱)/下半区(铁路货车)，过滤纯中文。"""
     upper_boxes = []
     lower_boxes = []
     split_y = img_height * 0.55
 
-    for ob in ocr_boxes:
-        # 过滤纯中文文本框
-        if _is_pure_chinese(ob.text):
-            continue
+    if result and result[0]:
+        for line in result[0]:
+            if not line:
+                continue
+            coords = line[0]
+            text, conf = line[1]
+            xs = [p[0] for p in coords]
+            ys = [p[1] for p in coords]
+            center_x = sum(xs) / 4
+            center_y = sum(ys) / 4
+            width = max(xs) - min(xs)
+            height = max(ys) - min(ys)
+            box = TextBox(text, conf, center_x, center_y, width, height)
 
-        x_min, y_min, x_max, y_max = ob.box
-        box = TextBox(
-            text=ob.text,
-            conf=ob.confidence,
-            center_x=(x_min + x_max) / 2,
-            center_y=(y_min + y_max) / 2,
-            width=x_max - x_min,
-            height=y_max - y_min,
-        )
+            # 过滤纯中文文本框
+            if _is_pure_chinese(text):
+                continue
 
-        if box.center_y < split_y:
-            upper_boxes.append(box)
-        else:
-            if not is_train_param(ob.text):
-                lower_boxes.append(box)
+            if center_y < split_y:
+                upper_boxes.append(box)
+            else:
+                if not is_train_param(text):
+                    lower_boxes.append(box)
 
     upper_boxes.sort(key=lambda b: b.center_x)
     lower_boxes.sort(key=lambda b: b.center_x)
@@ -657,7 +507,6 @@ class PaddleOCRProcessor:
 
     def __init__(self, use_gpu: bool = True):
         self.ocr = None
-        self.gap_detector = GapDetector()
         try:
             # NOTE: GPU 推理存在非确定性 bug（同一张图多次运行结果不一致），
             # 强制使用 CPU 以保证结果稳定。
@@ -665,27 +514,6 @@ class PaddleOCRProcessor:
             print("INFO: PaddleOCR initialized on CPU (lang=ch)")
         except Exception as e:
             print(f"ERROR: PaddleOCR init failed: {e}")
-
-    def recognize(self, image: np.ndarray) -> List[OCRBox]:
-        """Run OCR and return parsed boxes (aligned with CnOCR version)."""
-        if self.ocr is None:
-            return []
-
-        result = self.ocr.ocr(image, cls=True)
-        boxes: List[OCRBox] = []
-
-        if result and result[0]:
-            for line in result[0]:
-                if not line:
-                    continue
-                coords = line[0]
-                text, conf = line[1]
-                xs = [p[0] for p in coords]
-                ys = [p[1] for p in coords]
-                box = [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
-                boxes.append(OCRBox(box=box, text=text, confidence=float(conf)))
-
-        return boxes
 
     def process(self, image_path: str) -> ImageResult:
         """处理单张图片，返回带置信度的识别结果。"""
@@ -699,70 +527,9 @@ class PaddleOCRProcessor:
             print(f"ERROR: Cannot read image: {image_path}")
             return ImageResult()
 
-        # ========== 空挡检测（只做标记，不跳过 OCR）==========
-        gap_result = self.gap_detector.detect(img)
-        is_gap = gap_result.gap_type == GapType.GAP
-        if is_gap:
-            print(f"  [空挡检测] 空挡帧 (vert={gap_result.vert_edge_ratio:.4f})")
-        elif gap_result.gap_type == GapType.TRANSITION:
-            print(f"  [空挡检测] 过渡帧 (vert={gap_result.vert_edge_ratio:.4f})")
-        else:
-            print(f"  [空挡检测] 正常帧 (vert={gap_result.vert_edge_ratio:.4f})")
-
         h, w = img.shape[:2]
-        ocr_boxes = self.recognize(img)
-        upper_boxes, lower_boxes = parse_ocr_boxes(ocr_boxes, h)
-
-        # 上半区提取集装箱
-        container_ids = merge_boxes(upper_boxes, extract_container_id)
-
-        # 下半区提取铁路货车
-        train_ids = merge_boxes_train(lower_boxes)
-
-        # 分类车种和车号
-        train_types: List[Tuple[str, float]] = []
-        train_numbers: List[Tuple[str, float]] = []
-        for tid, conf in train_ids:
-            if _is_vehicle_type_pattern(tid):
-                train_types.append((tid, conf))
-            elif tid.isdigit():
-                train_numbers.append((tid, conf))
-
-        # ========== 无 OCR 二次修正 ==========
-        # 用户确认：过渡帧可能同时拍到过道和边缘集装箱号，OCR修正反而多余。
-        # 空挡检测纯靠 CV 特征，不过滤。
-
-        return ImageResult(
-            containers=container_ids,
-            train_types=train_types,
-            train_numbers=train_numbers,
-            is_gap=is_gap,
-        )
-
-    def process_bytes(self, image_bytes: bytes) -> ImageResult:
-        """Process raw image bytes and return structured results (for API use)."""
-        if self.ocr is None:
-            return ImageResult()
-
-        img_array = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if img is None:
-            print("ERROR: Cannot decode image bytes")
-            return ImageResult()
-
-        # ========== 空挡检测（只做标记，不跳过 OCR）==========
-        gap_result = self.gap_detector.detect(img)
-        is_gap = gap_result.gap_type == GapType.GAP
-        if is_gap:
-            print(f"  [空挡检测] 空挡帧 (vert={gap_result.vert_edge_ratio:.4f})")
-        elif gap_result.gap_type == GapType.TRANSITION:
-            print(f"  [空挡检测] 过渡帧 (vert={gap_result.vert_edge_ratio:.4f})")
-        else:
-            print(f"  [空挡检测] 正常帧 (vert={gap_result.vert_edge_ratio:.4f})")
-
-        h, w = img.shape[:2]
-        ocr_boxes = self.recognize(img)
-        upper_boxes, lower_boxes = parse_ocr_boxes(ocr_boxes, h)
+        result = self.ocr.ocr(img, cls=True)
+        upper_boxes, lower_boxes = parse_ocr_boxes(result, h)
 
         # 上半区提取集装箱
         container_ids = merge_boxes(upper_boxes, extract_container_id)
@@ -783,7 +550,6 @@ class PaddleOCRProcessor:
             containers=container_ids,
             train_types=train_types,
             train_numbers=train_numbers,
-            is_gap=is_gap,
         )
 
 
@@ -827,10 +593,8 @@ def main():
             confs.append(result.train_numbers[0][1])
         avg_conf = round(sum(confs) / len(confs), 4) if confs else 0.0
 
-        # 空挡帧：type 字段输出 ######## 作为标记
         result_dict = {
             "file": img_path.name,
-            "type": "########" if result.is_gap else "",
             "container": best_container,
             "vehicle_type": best_type,
             "vehicle_number": best_number,

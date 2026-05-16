@@ -2,11 +2,10 @@
 Train ID Recognition Endpoints
 
 FastAPI router for train identification recognition.
-Supports single image and batch processing using local CnOCR / PaddleOCR engines.
+Supports single image and batch processing using train_id_ocr_paddle.
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -15,8 +14,6 @@ from ...schemas.train_id import (
     TrainIDResponse,
     TrainIDBatchResponse,
     TrainIDBatchItem,
-    PaddleImageResponse,
-    FlatcarImageResponse,
 )
 from ...services.train_id import get_train_id_service_singleton
 
@@ -51,17 +48,15 @@ def _get_error_response(
         422: {"description": "OCR processing failed"},
         503: {"description": "Engine not available"},
     },
-    summary="识别单张列车图片（CnOCR 车种/车号）",
+    summary="识别单张列车图片（车种/车号）",
     description="""
-    上传一张车站进站摄像头拍摄的列车图片，使用 CnOCR 引擎识别车种和车号信息。
+    上传一张列车图片，使用 PaddleOCR 引擎识别车种和车号信息。
 
-    **适用场景：** 常规列车进站图片识别
-
-    **返回数据：** 车种(vehicleType)、车号(vehicleNumber)、置信度(confidence)
+    **返回数据：** type(空挡标记)、车种(vehicleType)、车号(vehicleNumber)、置信度(confidence)
     """,
 )
 async def recognize_train_id(
-    image: UploadFile = File(..., description="车站进站摄像头图片文件"),
+    image: UploadFile = File(..., description="列车图片文件"),
 ) -> TrainIDResponse | JSONResponse:
     """Recognize train vehicle type and number from a single image."""
     service = get_train_id_service_singleton()
@@ -98,7 +93,7 @@ async def recognize_train_id(
         422: {"description": "OCR processing failed"},
         503: {"description": "Engine not available"},
     },
-    summary="批量识别列车图片（CnOCR 车种/车号）",
+    summary="批量识别列车图片（车种/车号）",
     description="""
     上传多张列车图片进行批量识别。
 
@@ -106,7 +101,7 @@ async def recognize_train_id(
     """,
 )
 async def recognize_train_id_batch(
-    images: list[UploadFile] = File(..., description="车站进站摄像头图片文件列表"),
+    images: list[UploadFile] = File(..., description="列车图片文件列表"),
 ) -> TrainIDBatchResponse | JSONResponse:
     """Recognize train IDs from multiple images."""
     service = get_train_id_service_singleton()
@@ -126,6 +121,7 @@ async def recognize_train_id_batch(
             data = await service.recognize_image(image_bytes, image.filename)
             items.append(TrainIDBatchItem(
                 filename=image.filename,
+                type=data.type,
                 vehicleType=data.vehicle_type,
                 vehicleNumber=data.vehicle_number,
                 confidence=data.confidence,
@@ -140,109 +136,3 @@ async def recognize_train_id_batch(
     except Exception as e:
         logger.error(f"Batch recognition error: {e}")
         return _get_error_response(str(e), endpoint=endpoint)
-
-
-@router.post(
-    "/recognize/paddle",
-    response_model=PaddleImageResponse,
-    responses={
-        200: {"description": "PaddleOCR image recognized successfully"},
-        400: {"description": "Invalid image format"},
-        422: {"description": "OCR processing failed"},
-        503: {"description": "Engine not available"},
-    },
-    summary="识别单张列车图片（PaddleOCR 集装箱+车种/车号）",
-    description="""
-    上传一张列车图片，使用 PaddleOCR 引擎识别集装箱箱号、车种和车号。
-
-    **识别策略：**
-    - 上半区域（约55%）：识别集装箱箱号
-    - 下半区域（约45%）：识别车种和车号
-
-    **适用场景：** 同时需要集装箱箱号和列车编号的场景
-    """,
-)
-async def recognize_paddle_image(
-    image: UploadFile = File(..., description="列车图片文件"),
-) -> PaddleImageResponse | JSONResponse:
-    """Recognize container IDs and train IDs from a single image using PaddleOCR."""
-    service = get_train_id_service_singleton()
-    endpoint = "/api/v1/train-id/recognize/paddle"
-
-    if not service.paddle_available:
-        return _get_error_response(
-            "PaddleOCR image engine not available",
-            status_code=503,
-            endpoint=endpoint,
-        )
-
-    try:
-        image_bytes = await image.read()
-        data = await service.recognize_paddle_image(image_bytes, image.filename)
-
-        return PaddleImageResponse(
-            success=True,
-            message="PaddleOCR image recognized successfully",
-            data=data,
-        )
-
-    except Exception as e:
-        logger.error(f"PaddleOCR image recognition error: {e}")
-        return _get_error_response(str(e), endpoint=endpoint)
-
-
-@router.post(
-    "/recognize/flatcar",
-    response_model=FlatcarImageResponse,
-    responses={
-        200: {"description": "Flatcar recognized successfully"},
-        400: {"description": "Invalid image format"},
-        422: {"description": "OCR processing failed"},
-        503: {"description": "Engine not available"},
-    },
-    summary="识别单张板车图片（PaddleOCR 车型/车号）",
-    description="""
-    上传一张板车（车板号）图片，使用 PaddleOCR 中文引擎识别车型和车号。
-
-    **识别策略：**
-    - 底部区域（75%-100% 高度）：针对车板号喷涂位置优化
-    - 暗光预处理：LAB 空间 CLAHE 增强
-    - 同行框拼接：按 Y 坐标分行，同行内按 X 坐标排序合并
-
-    **适用场景：** 板车底部车号识别
-    """,
-)
-async def recognize_flatcar_image(
-    image: UploadFile = File(..., description="板车图片文件"),
-) -> FlatcarImageResponse | JSONResponse:
-    """Recognize flatcar type and number from a single image using PaddleOCR (ch)."""
-    service = get_train_id_service_singleton()
-    endpoint = "/api/v1/train-id/recognize/flatcar"
-
-    if not service.flatcar_available:
-        return _get_error_response(
-            "Flatcar image engine not available",
-            status_code=503,
-            endpoint=endpoint,
-        )
-
-    try:
-        image_bytes = await image.read()
-        data = await service.recognize_flatcar_image(image_bytes, image.filename)
-
-        return FlatcarImageResponse(
-            success=True,
-            message="Flatcar recognized successfully",
-            data=data,
-        )
-
-    except Exception as e:
-        logger.error(f"Flatcar recognition error: {e}")
-        return _get_error_response(str(e), endpoint=endpoint)
-
-
-# ---------------------------------------------------------------------------
-# Video recognition endpoints (deprecated, kept for reference)
-# ---------------------------------------------------------------------------
-# @router.post("/recognize/video", ...)
-# @router.post("/recognize/flatcar-video", ...)

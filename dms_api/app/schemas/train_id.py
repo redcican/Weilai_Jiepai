@@ -15,6 +15,10 @@ class TrainIDData(BaseSchema):
     Contains vehicle type and number extracted from station-entry camera images.
     """
 
+    type: str = Field(
+        default="",
+        description="空挡标记，######## 表示空挡帧",
+    )
     vehicle_type: str = Field(
         default="",
         alias="vehicleType",
@@ -41,6 +45,10 @@ class TrainIDBatchItem(BaseSchema):
     """Single item in a batch recognition response."""
 
     filename: str = Field(..., description="Original filename")
+    type: str = Field(
+        default="",
+        description="空挡标记，######## 表示空挡帧",
+    )
     vehicle_type: str = Field(
         default="",
         alias="vehicleType",
@@ -64,61 +72,7 @@ class TrainIDBatchResponse(ResponseSchema[list[TrainIDBatchItem]]):
 
 
 # ---------------------------------------------------------------------------
-# PaddleOCR single-image recognition schemas
-# ---------------------------------------------------------------------------
-
-class PaddleImageData(BaseSchema):
-    """Recognized data from single-image PaddleOCR processing."""
-
-    containers: list[str] = Field(
-        default_factory=list,
-        description="Container IDs (集装箱箱号)",
-    )
-    train_types: list[str] = Field(
-        default_factory=list,
-        alias="trainTypes",
-        description="Train vehicle types (车种), e.g. C70E, C64K",
-    )
-    train_numbers: list[str] = Field(
-        default_factory=list,
-        alias="trainNumbers",
-        description="Train vehicle numbers (车号)",
-    )
-
-
-class PaddleImageResponse(ResponseSchema[PaddleImageData]):
-    """Response for PaddleOCR single-image recognition."""
-
-    pass
-
-
-# ---------------------------------------------------------------------------
-# Flatcar single-image recognition schemas
-# ---------------------------------------------------------------------------
-
-class FlatcarImageData(BaseSchema):
-    """Recognized data from single-image flatcar processing."""
-
-    types: list[str] = Field(
-        default_factory=list,
-        description="Flatcar vehicle types (车型), e.g. X70, C70E",
-    )
-    numbers: list[str] = Field(
-        default_factory=list,
-        description="Flatcar vehicle numbers (车号)",
-    )
-
-
-class FlatcarImageResponse(ResponseSchema[FlatcarImageData]):
-    """Response for flatcar single-image recognition."""
-
-    pass
-
-
-# ---------------------------------------------------------------------------
 # Video recognition schemas (deprecated, kept for reference)
 # ---------------------------------------------------------------------------
 # class VideoTrainIDData(BaseSchema): ...
 # class VideoTrainIDResponse(ResponseSchema[VideoTrainIDData]): ...
-# class FlatcarVideoData(BaseSchema): ...
-# class FlatcarVideoResponse(ResponseSchema[FlatcarVideoData]): ...

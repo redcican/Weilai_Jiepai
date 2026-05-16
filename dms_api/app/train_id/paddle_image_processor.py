@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from .video_engine import PaddleOCREngine
+from .gap_detector import GapDetector, GapType
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +337,7 @@ class PaddleImageProcessor:
 
     def __init__(self, engine: Optional[PaddleOCREngine] = None):
         self.engine = engine or PaddleOCREngine.get_instance(lang="en")
+        self.gap_detector = GapDetector()
 
     @property
     def available(self) -> bool:
@@ -366,6 +368,10 @@ class PaddleImageProcessor:
     def _process_img(self, img: np.ndarray) -> dict:
         h, w = img.shape[:2]
 
+        # 空挡检测
+        gap_result = self.gap_detector.detect(img)
+        is_gap = gap_result.gap_type == GapType.GAP
+
         result = self.engine.ocr(img, cls=True)
 
         upper_boxes, lower_boxes = _parse_ocr_boxes(result, h)
@@ -376,8 +382,15 @@ class PaddleImageProcessor:
         train_types = [t for t in train_ids if re.match(r"^[A-Z]\d{2,4}[A-Z]?$", t)]
         train_numbers = [t for t in train_ids if t.isdigit()]
 
+        # 计算平均置信度（所有有效文本框）
+        all_boxes = upper_boxes + lower_boxes
+        confs = [b.conf for b in all_boxes if hasattr(b, "conf")]
+        avg_conf = round(sum(confs) / len(confs), 4) if confs else 0.0
+
         return {
             "containers": container_ids,
             "train_types": train_types,
             "train_numbers": train_numbers,
+            "type": "########" if is_gap else "",
+            "confidence": avg_conf,
         }
