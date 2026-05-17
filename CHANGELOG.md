@@ -1,5 +1,44 @@
 # 更新日志
 
+## [0.10.2] - 2026-05-15
+
+### 重构
+- **API 与 CLI 统一** — `/recognize` 和 `/recognize/batch` 底层改为直接调用 `train_id_ocr_paddle.py` 的 `PaddleOCRProcessor`
+  - 删除独立的 `PaddleImageProcessor`（`dms_api/app/train_id/paddle_image_processor.py`）
+  - 保证 API 和 CLI 使用同一份核心识别代码，避免维护两套逻辑
+  - `train_id_ocr_paddle.py` 新增 `process_bytes(image_bytes)` 方法供 API 调用
+
+### 功能
+- **空挡检测** — `/recognize` 和 `/recognize/batch` 响应新增 `type` 字段
+  - `type: "########"` 表示空挡帧（车厢连接处）
+  - `type: ""` 表示正常帧
+  - 纯 CV 判断，不训练：中心 ROI + 四特征严格 AND（竖直边缘 + 低梯度 + 亮度 + 亮斑）
+  - 新增 `dms_api/app/train_id/gap_detector.py` — `GapDetector` 空挡检测器
+- **板车单图识别** — 新增 `POST /api/v1/train-id/recognize/flatcar` 端点
+  - 底层使用 `run_bottom_merge_ocr.py` 的 `FlatcarBottomProcessor`
+  - 底部区域（75%-100% 高度）+ LAB CLAHE 暗光增强 + 同行框拼接
+  - 车型纠错覆盖 X70/X6K/C70E/C80 等
+  - 车号优先取 7 位数字
+  - 输出：`vehicleType` + `vehicleNumber` + `confidence`
+- **GPU/CPU 自动兼容** — `PaddleOCRProcessor` 和 `FlatcarBottomProcessor` 默认尝试 GPU，失败自动回退 CPU
+  - 支持 RTX 3060 等 Ampere 架构显卡
+  - 无 CUDA 驱动或 GPU 初始化失败时无缝回退 CPU，不影响服务可用性
+
+### 删除
+- **移除 `/recognize/paddle` 端点** — 原集装箱+车种+车号独立接口，现由 `/recognize` 统一覆盖
+- **移除 `/recognize/flatcar` 旧端点** — 原基于 `flatcar_image_processor.py` 的实现，现由新的 `/recognize/flatcar` 替换
+- 删除 `train_id_ocr/batch_v6_flatcar.py`、`train_id_ocr/train_id_ocr_video_paddle_v5.py` 等旧文件
+
+### 文件变更
+- 修改 `train_id_ocr/train_id_ocr_paddle.py` — 新增 `process_bytes()`、GPU/CPU 自动切换
+- 修改 `train_id_ocr/run_bottom_merge_ocr.py` — 新增 `FlatcarBottomProcessor` 类、GPU/CPU 自动切换
+- 修改 `dms_api/app/api/v1/train_id.py` — 删除 `/recognize/paddle` 和旧 `/recognize/flatcar`，新增新的 `/recognize/flatcar`
+- 修改 `dms_api/app/services/train_id.py` — 改为调用 `PaddleOCRProcessor` 和 `FlatcarBottomProcessor`
+- 修改 `dms_api/app/schemas/train_id.py` — 删除 `PaddleImageData`/`FlatcarImageData`，新增 `FlatcarData`
+- 修改 `dms_api/app/schemas/__init__.py` — 同步导出
+- 新增 `dms_api/app/train_id/gap_detector.py` — 空挡检测器
+- 新增 `train_id_ocr/train_id_ocr_paddle_backup.py` — 空挡检测集成前的原始备份
+
 ## [0.10.1] - 2026-05-14
 ### 功能
 - **单图 PaddleOCR 识别** — `POST /api/v1/train-id/recognize/paddle` 单图识别端点

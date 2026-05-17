@@ -658,9 +658,17 @@ class PaddleOCRProcessor:
     def __init__(self, use_gpu: bool = True):
         self.ocr = None
         self.gap_detector = GapDetector()
+
+        # 优先尝试 GPU，失败则自动回退 CPU
+        if use_gpu:
+            try:
+                self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=True)
+                print("INFO: PaddleOCR initialized on GPU (lang=ch)")
+                return
+            except Exception as e:
+                print(f"WARNING: PaddleOCR GPU init failed: {e}, falling back to CPU")
+
         try:
-            # NOTE: GPU 推理存在非确定性 bug（同一张图多次运行结果不一致），
-            # 强制使用 CPU 以保证结果稳定。
             self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=False)
             print("INFO: PaddleOCR initialized on CPU (lang=ch)")
         except Exception as e:

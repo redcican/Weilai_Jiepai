@@ -287,12 +287,23 @@ def draw_merged_results(img, merged_rows):
 class FlatcarBottomProcessor:
     """平板车底部区域单图处理器（基于同行框拼接）。"""
 
-    def __init__(self):
+    def __init__(self, use_gpu: bool = True):
         self.ocr = None
+
+        # 优先尝试 GPU，失败则自动回退 CPU
+        if use_gpu:
+            try:
+                self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=True)
+                print("INFO: Flatcar PaddleOCR initialized on GPU (lang=ch)")
+                return
+            except Exception as e:
+                print(f"WARNING: Flatcar PaddleOCR GPU init failed: {e}, falling back to CPU")
+
         try:
             self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=False)
+            print("INFO: Flatcar PaddleOCR initialized on CPU (lang=ch)")
         except Exception as e:
-            print(f"ERROR: PaddleOCR init failed: {e}")
+            print(f"ERROR: Flatcar PaddleOCR init failed: {e}")
 
     @property
     def available(self) -> bool:
