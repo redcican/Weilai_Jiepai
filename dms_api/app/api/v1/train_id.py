@@ -126,6 +126,8 @@ async def recognize_train_id_batch(
                 vehicleType=data.vehicle_type,
                 vehicleNumber=data.vehicle_number,
                 confidence=data.confidence,
+                container=data.container,
+                containerConfidence=data.container_confidence,
             ))
 
         return TrainIDBatchResponse(

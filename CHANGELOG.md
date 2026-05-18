@@ -1,5 +1,21 @@
 # 更新日志
 
+## [0.10.3] - 2026-05-18
+
+### 功能
+- **API 返回集装箱箱号** — `/recognize` 和 `/recognize/batch` 响应新增 `container` 和 `containerConfidence` 字段
+  - 从 `PaddleOCRProcessor` 上半区识别结果中取置信度最高的集装箱箱号
+  - 无集装箱时返回空字符串 + 0.0 置信度
+  - 单图接口和批量接口同步支持
+
+### 修复
+- **批量接口字段丢失** — `/recognize/batch` 构造 `TrainIDBatchItem` 时漏传 `container` 和 `containerConfidence`，已补上
+
+### 文件变更
+- 修改 `dms_api/app/schemas/train_id.py` — `TrainIDData`/`TrainIDBatchItem` 新增 `container` + `containerConfidence`
+- 修改 `dms_api/app/services/train_id.py` — `recognize_image()` 提取最佳集装箱，`recognize_batch()` 透传
+- 修改 `dms_api/app/api/v1/train_id.py` — 批量接口补上 `container`/`containerConfidence` 字段
+
 ## [0.10.2] - 2026-05-15
 
 ### 重构
