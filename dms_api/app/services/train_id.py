@@ -86,7 +86,11 @@ class TrainIDService:
         vehicle_type = result.train_types[0][0] if result.train_types else ""
         vehicle_number = result.train_numbers[0][0] if result.train_numbers else ""
 
-        # 计算平均置信度
+        # 集装箱：取置信度最高的一个
+        container = result.containers[0][0] if result.containers else ""
+        container_conf = result.containers[0][1] if result.containers else 0.0
+
+        # 计算平均置信度（车型+车号）
         confs = []
         if result.train_types:
             confs.append(result.train_types[0][1])
@@ -97,6 +101,7 @@ class TrainIDService:
         logger.info(
             f"Train ID result: type='{vehicle_type}' "
             f"number='{vehicle_number}' "
+            f"container='{container}' "
             f"gap='{'########' if result.is_gap else ''}' "
             f"confidence={avg_conf:.3f}"
         )
@@ -106,6 +111,8 @@ class TrainIDService:
             vehicleType=vehicle_type,
             vehicleNumber=vehicle_number,
             confidence=avg_conf,
+            container=container,
+            containerConfidence=round(container_conf, 4),
         )
 
     # ------------------------------------------------------------------
@@ -128,6 +135,8 @@ class TrainIDService:
                 vehicleType=data.vehicle_type,
                 vehicleNumber=data.vehicle_number,
                 confidence=data.confidence,
+                container=data.container,
+                containerConfidence=data.container_confidence,
             ))
         return results
 

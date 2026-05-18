@@ -33,6 +33,15 @@ class TrainIDData(BaseSchema):
         default=0.0,
         description="Average OCR confidence score (0.0 - 1.0)",
     )
+    container: str = Field(
+        default="",
+        description="Best container ID (集装箱箱号), e.g. TBJU881313",
+    )
+    container_confidence: float = Field(
+        default=0.0,
+        alias="containerConfidence",
+        description="Container recognition confidence (0.0 - 1.0)",
+    )
 
 
 class TrainIDResponse(ResponseSchema[TrainIDData]):
@@ -62,6 +71,15 @@ class TrainIDBatchItem(BaseSchema):
     confidence: float = Field(
         default=0.0,
         description="Average OCR confidence score",
+    )
+    container: str = Field(
+        default="",
+        description="Best container ID (集装箱箱号)",
+    )
+    container_confidence: float = Field(
+        default=0.0,
+        alias="containerConfidence",
+        description="Container recognition confidence",
     )
 
 
