@@ -289,28 +289,37 @@ class FlatcarBottomProcessor:
 
     def __init__(self, use_gpu: bool = True):
         self.ocr = None
+        self.gap_detector = None
 
         # 优先尝试 GPU，失败则自动回退 CPU
         if use_gpu:
             try:
                 self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=True)
                 print("INFO: Flatcar PaddleOCR initialized on GPU (lang=ch)")
-                return
             except Exception as e:
                 print(f"WARNING: Flatcar PaddleOCR GPU init failed: {e}, falling back to CPU")
 
+        if self.ocr is None:
+            try:
+                self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=False)
+                print("INFO: Flatcar PaddleOCR initialized on CPU (lang=ch)")
+            except Exception as e:
+                print(f"ERROR: Flatcar PaddleOCR init failed: {e}")
+
+        # 初始化空挡检测器
         try:
-            self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False, use_gpu=False)
-            print("INFO: Flatcar PaddleOCR initialized on CPU (lang=ch)")
+            from flatcar_gap_detector import FlatcarGapDetector
+            self.gap_detector = FlatcarGapDetector()
+            print("INFO: FlatcarGapDetector initialized")
         except Exception as e:
-            print(f"ERROR: Flatcar PaddleOCR init failed: {e}")
+            print(f"WARNING: FlatcarGapDetector init failed: {e}")
 
     @property
     def available(self) -> bool:
         return self.ocr is not None
 
     def process_bytes(self, image_bytes: bytes) -> dict:
-        """Process raw image bytes and return flatcar type + number.
+        """Process JPEG/PNG image bytes and return flatcar type + number.
 
         Returns:
             {
@@ -326,6 +335,47 @@ class FlatcarBottomProcessor:
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
             return {"vehicleType": "", "vehicleNumber": "", "confidence": 0.0}
+
+        return self._process_img(img)
+
+    def process_raw_bytes(
+        self,
+        image_bytes: bytes,
+        pixel_type: int,
+        width: int,
+        height: int,
+    ) -> dict:
+        """Process raw camera pixel bytes (Bayer/Mono) and return flatcar results.
+
+        Uses decode_raw_image() to convert raw industrial camera data to BGR.
+        """
+        if self.ocr is None:
+            return {"vehicleType": "", "vehicleNumber": "", "confidence": 0.0}
+
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'dms_api'))
+        from app.train_id.utils import decode_raw_image
+
+        img = decode_raw_image(image_bytes, pixel_type, width, height)
+        if img is None:
+            print("ERROR: FlatcarBottomProcessor failed to decode raw image bytes")
+            return {"vehicleType": "", "vehicleNumber": "", "confidence": 0.0}
+
+        return self._process_img(img)
+
+    def _process_img(self, img: np.ndarray) -> dict:
+        """Process a decoded BGR image and return flatcar recognition results."""
+        # ========== 空挡检测 ==========
+        is_gap = False
+        if self.gap_detector is not None:
+            try:
+                is_gap, _, _ = self.gap_detector.detect(img)
+                if is_gap:
+                    print(f"  [Flatcar空挡检测] 空挡帧")
+                else:
+                    print(f"  [Flatcar空挡检测] 正常帧")
+            except Exception as e:
+                print(f"  [Flatcar空挡检测] 检测异常: {e}")
 
         h, w = img.shape[:2]
         y1 = int(h * BOTTOM_Y_START)
@@ -386,6 +436,7 @@ class FlatcarBottomProcessor:
         avg_conf = round(sum(confs) / len(confs), 4) if confs else 0.0
 
         return {
+            "type": "########" if is_gap else "",
             "vehicleType": vehicle_type,
             "vehicleNumber": vehicle_number,
             "confidence": avg_conf,

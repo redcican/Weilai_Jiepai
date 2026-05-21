@@ -187,7 +187,7 @@ class FlatcarImageProcessor:
         return self.engine.available
 
     def process_bytes(self, image_bytes: bytes) -> dict:
-        """Process raw image bytes and return flatcar recognition results.
+        """Process JPEG/PNG image bytes and return flatcar recognition results.
 
         Returns:
             {
@@ -203,6 +203,30 @@ class FlatcarImageProcessor:
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
             logger.warning("Failed to decode image bytes")
+            return {"types": [], "numbers": []}
+
+        return self._process_img(img)
+
+    def process_raw_bytes(
+        self,
+        image_bytes: bytes,
+        pixel_type: int,
+        width: int,
+        height: int,
+    ) -> dict:
+        """Process raw camera pixel bytes (Bayer/Mono) and return flatcar results.
+
+        Uses decode_raw_image() to convert raw industrial camera data to BGR.
+        """
+        if not self.engine.available:
+            logger.error("PaddleOCR (ch) engine not available")
+            return {"types": [], "numbers": []}
+
+        from .utils import decode_raw_image
+
+        img = decode_raw_image(image_bytes, pixel_type, width, height)
+        if img is None:
+            logger.warning("Failed to decode raw image bytes")
             return {"types": [], "numbers": []}
 
         return self._process_img(img)

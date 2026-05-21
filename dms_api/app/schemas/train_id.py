@@ -96,6 +96,10 @@ class TrainIDBatchResponse(ResponseSchema[list[TrainIDBatchItem]]):
 class FlatcarData(BaseSchema):
     """Recognized data from flatcar bottom-region processing."""
 
+    type: str = Field(
+        default="",
+        description="空挡标记，######## 表示空挡帧",
+    )
     vehicle_type: str = Field(
         default="",
         alias="vehicleType",

@@ -166,12 +166,14 @@ class TrainIDService:
         result = processor.process_bytes(image_bytes)
 
         logger.info(
-            f"Flatcar result: type='{result['vehicleType']}' "
+            f"Flatcar result: type='{result.get('type', '')}' "
+            f"vehicleType='{result['vehicleType']}' "
             f"number='{result['vehicleNumber']}' "
             f"confidence={result['confidence']:.3f}"
         )
 
         return FlatcarData(
+            type=result.get("type", ""),
             vehicleType=result["vehicleType"],
             vehicleNumber=result["vehicleNumber"],
             confidence=result["confidence"],
