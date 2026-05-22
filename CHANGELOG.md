@@ -1,5 +1,39 @@
 # 更新日志
 
+## [0.10.4] - 2026-05-21
+
+### 功能
+- **工业相机原始像素解码** — 新增 `decode_raw_image()` 支持海康 GigE Vision 原始 Bayer/Mono 数据
+  - `PixelType_Gvsp_BayerGB8`（单通道 8bit）→ OpenCV BGR
+  - `PixelType_Gvsp_Mono8` → `COLOR_GRAY2BGR`
+  - `PixelType_Gvsp_RGB8/BGR8` → BGR
+  - `RESOLUTION_BAYER_MAP` 根据分辨率自动选择正确 Bayer 模式：
+    - 2448×2048 → `COLOR_BayerRG2BGR`（115/117 摄像头）
+    - 4096×3000 → `COLOR_BayerGR2BGR`（116/118 摄像头）
+  - 解决海康 `BayerGB8` 与 OpenCV Bayer 常量命名不匹配问题（经 4 组实际数据验证）
+- **车厢号识别支持原始像素** — `PaddleOCRProcessor` 新增 `process_raw_bytes(image_bytes, pixel_type, width, height)`
+  - 与 `process_bytes()` 共用同一套 `_process_img()` OCR 逻辑
+  - 输出格式不变（`ImageResult` 结构完全一致）
+- **板车识别支持原始像素** — `FlatcarBottomProcessor` / `FlatcarImageProcessor` 新增 `process_raw_bytes()`
+  - 同样共用 `_process_img()` 底部区域 OCR 逻辑
+  - 输出格式不变
+- **板车空挡检测集成** — `FlatcarBottomProcessor` 初始化时加载 `FlatcarGapDetector`
+  - 空挡帧输出 `type: "########"`，正常帧输出 `type: ""`
+  - 与车厢号空挡检测输出格式统一
+  - 传统 CV 方案：中心 ROI + 亮度/边缘/方差/列极值差 8 特征评分
+  - 阈值经 1227 帧实际数据校准，暗光空挡不漏检，金属结构不误判
+- **Service 层新增 raw 入口** — `TrainIDService` 新增 `recognize_raw_image()` 供队列消费端调用
+  - 提取 `_build_train_id_data()` 公共方法，避免 `recognize_image` / `recognize_raw_image` 重复代码
+
+### 文件变更
+- 修改 `dms_api/app/train_id/utils.py` — 新增 `decode_raw_image()`、`RESOLUTION_BAYER_MAP`、海康像素格式常量
+- 修改 `dms_api/app/train_id/flatcar_image_processor.py` — 新增 `process_raw_bytes()`
+- 修改 `train_id_ocr/run_bottom_merge_ocr.py` — 集成 `FlatcarGapDetector`，新增 `process_raw_bytes()` + `_process_img()`
+- 修改 `train_id_ocr/train_id_ocr_paddle.py` — 新增 `process_raw_bytes()` + `_process_img()`
+- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_raw_image()` + `_build_train_id_data()`，`recognize_flatcar_image` 读取 `type`
+- 修改 `dms_api/app/schemas/train_id.py` — `FlatcarData` 新增 `type` 字段
+- 新增 `train_id_ocr/flatcar_gap_detector.py` — `FlatcarGapDetector` 板车空挡检测器（生产级传统 CV）
+
 ## [0.10.3] - 2026-05-18
 
 ### 功能
