@@ -748,7 +748,7 @@ class PaddleOCRProcessor:
         )
 
     def process_bytes(self, image_bytes: bytes) -> ImageResult:
-        """Process raw image bytes and return structured results (for API use)."""
+        """Process JPEG/PNG image bytes and return structured results (for API use)."""
         if self.ocr is None:
             return ImageResult()
 
@@ -758,6 +758,36 @@ class PaddleOCRProcessor:
             print("ERROR: Cannot decode image bytes")
             return ImageResult()
 
+        return self._process_img(img)
+
+    def process_raw_bytes(
+        self,
+        image_bytes: bytes,
+        pixel_type: int,
+        width: int,
+        height: int,
+    ) -> ImageResult:
+        """Process raw camera pixel bytes (Bayer/Mono) and return structured results.
+
+        Uses decode_raw_image() to convert raw industrial camera data to BGR.
+        """
+        if self.ocr is None:
+            return ImageResult()
+
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dms_api"))
+        from app.train_id.utils import decode_raw_image
+
+        img = decode_raw_image(image_bytes, pixel_type, width, height)
+        if img is None:
+            print("ERROR: Cannot decode raw image bytes")
+            return ImageResult()
+
+        return self._process_img(img)
+
+    def _process_img(self, img: np.ndarray) -> ImageResult:
+        """Process a decoded BGR image and return structured results."""
         # ========== 空挡检测（只做标记，不跳过 OCR）==========
         gap_result = self.gap_detector.detect(img)
         is_gap = gap_result.gap_type == GapType.GAP

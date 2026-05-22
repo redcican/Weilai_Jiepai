@@ -68,7 +68,7 @@ class TrainIDService:
         filename: str = "unknown",
     ) -> TrainIDData:
         """
-        Recognize vehicle type and number from a single image.
+        Recognize vehicle type and number from a JPEG/PNG image.
 
         直接复用 train_id_ocr_paddle.py 的 PaddleOCRProcessor，
         支持空挡检测(type字段)。
@@ -82,7 +82,38 @@ class TrainIDService:
         logger.info(f"Processing train ID image: {filename}, size={len(image_bytes)} bytes")
 
         result: ImageResult = processor.process_bytes(image_bytes)
+        return self._build_train_id_data(result)
 
+    async def recognize_raw_image(
+        self,
+        image_bytes: bytes,
+        pixel_type: int,
+        width: int,
+        height: int,
+        filename: str = "unknown",
+    ) -> TrainIDData:
+        """
+        Recognize vehicle type and number from raw camera pixel data.
+
+        Uses decode_raw_image() to convert Bayer/Mono raw data to BGR.
+        """
+        processor = self.get_ocr_processor()
+
+        if processor.ocr is None:
+            logger.error("Train ID engine not available")
+            return TrainIDData()
+
+        logger.info(
+            f"Processing raw train ID image: {filename}, "
+            f"pixel_type=0x{pixel_type:08X}, size={len(image_bytes)} bytes, "
+            f"{width}x{height}"
+        )
+
+        result: ImageResult = processor.process_raw_bytes(image_bytes, pixel_type, width, height)
+        return self._build_train_id_data(result)
+
+    def _build_train_id_data(self, result: ImageResult) -> TrainIDData:
+        """Build TrainIDData from ImageResult."""
         vehicle_type = result.train_types[0][0] if result.train_types else ""
         vehicle_number = result.train_numbers[0][0] if result.train_numbers else ""
 
