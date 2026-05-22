@@ -66,9 +66,16 @@ class TrainIDService:
         self,
         image_bytes: bytes,
         filename: str = "unknown",
+        pixel_type: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> TrainIDData:
         """
-        Recognize vehicle type and number from a JPEG/PNG image.
+        Recognize vehicle type and number from an image.
+
+        Supports both JPEG/PNG and raw camera pixel data (Bayer/Mono).
+        If pixel_type + width + height are provided, uses raw pixel decode.
+        Otherwise uses cv2.imdecode for JPEG/PNG.
 
         直接复用 train_id_ocr_paddle.py 的 PaddleOCRProcessor，
         支持空挡检测(type字段)。
@@ -79,37 +86,17 @@ class TrainIDService:
             logger.error("Train ID engine not available")
             return TrainIDData()
 
-        logger.info(f"Processing train ID image: {filename}, size={len(image_bytes)} bytes")
+        if pixel_type is not None and width is not None and height is not None:
+            logger.info(
+                f"Processing raw train ID image: {filename}, "
+                f"pixel_type=0x{pixel_type:08X}, size={len(image_bytes)} bytes, "
+                f"{width}x{height}"
+            )
+            result: ImageResult = processor.process_raw_bytes(image_bytes, pixel_type, width, height)
+        else:
+            logger.info(f"Processing train ID image: {filename}, size={len(image_bytes)} bytes")
+            result: ImageResult = processor.process_bytes(image_bytes)
 
-        result: ImageResult = processor.process_bytes(image_bytes)
-        return self._build_train_id_data(result)
-
-    async def recognize_raw_image(
-        self,
-        image_bytes: bytes,
-        pixel_type: int,
-        width: int,
-        height: int,
-        filename: str = "unknown",
-    ) -> TrainIDData:
-        """
-        Recognize vehicle type and number from raw camera pixel data.
-
-        Uses decode_raw_image() to convert Bayer/Mono raw data to BGR.
-        """
-        processor = self.get_ocr_processor()
-
-        if processor.ocr is None:
-            logger.error("Train ID engine not available")
-            return TrainIDData()
-
-        logger.info(
-            f"Processing raw train ID image: {filename}, "
-            f"pixel_type=0x{pixel_type:08X}, size={len(image_bytes)} bytes, "
-            f"{width}x{height}"
-        )
-
-        result: ImageResult = processor.process_raw_bytes(image_bytes, pixel_type, width, height)
         return self._build_train_id_data(result)
 
     def _build_train_id_data(self, result: ImageResult) -> TrainIDData:
@@ -179,9 +166,16 @@ class TrainIDService:
         self,
         image_bytes: bytes,
         filename: str = "unknown",
+        pixel_type: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
     ) -> FlatcarData:
         """
-        Recognize flatcar type and number from a single image.
+        Recognize flatcar type and number from an image.
+
+        Supports both JPEG/PNG and raw camera pixel data (Bayer/Mono).
+        If pixel_type + width + height are provided, uses raw pixel decode.
+        Otherwise uses cv2.imdecode for JPEG/PNG.
 
         使用 run_bottom_merge_ocr.py 的 FlatcarBottomProcessor，
         底部区域（75%-100% 高度）+ 暗光增强 + 同行框拼接。
@@ -192,9 +186,16 @@ class TrainIDService:
             logger.error("Flatcar engine not available")
             return FlatcarData()
 
-        logger.info(f"Processing flatcar image: {filename}, size={len(image_bytes)} bytes")
-
-        result = processor.process_bytes(image_bytes)
+        if pixel_type is not None and width is not None and height is not None:
+            logger.info(
+                f"Processing raw flatcar image: {filename}, "
+                f"pixel_type=0x{pixel_type:08X}, size={len(image_bytes)} bytes, "
+                f"{width}x{height}"
+            )
+            result = processor.process_raw_bytes(image_bytes, pixel_type, width, height)
+        else:
+            logger.info(f"Processing flatcar image: {filename}, size={len(image_bytes)} bytes")
+            result = processor.process_bytes(image_bytes)
 
         logger.info(
             f"Flatcar result: type='{result.get('type', '')}' "
