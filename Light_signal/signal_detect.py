@@ -25,25 +25,40 @@ import argparse
 import json
 import sys
 
-CONFIG_FILE = "signal_config.json"
+CONFIG_FILE = str(Path(__file__).parent / "signal_config.json")
 
 # ---------------------------------------------------------------------------
 # Default ROI config (calibrated from the three known cameras)
 # Format: [x1, y1, x2, y2] — pixel coordinates in 1280x720 images
 # ---------------------------------------------------------------------------
 DEFAULT_CONFIG = {
-    "front_signal": {
+    "拨车机前侧信号灯识别": {
         "roi": [710, 255, 840, 370],
         "description": "Front-side signal at track switch point",
     },
+    "front_signal": {
+        "roi": [710, 255, 840, 370],
+        "description": "Front-side signal alias",
+    },
+    "拨车机后侧信号灯": {
+        "roi": [400, 200, 640, 440],
+        "signal_center": [550, 280],
+        "description": "Rear-side signal 240x240 centered on white LED",
+    },
     "rear_signal": {
-        "roi": [340, 55, 870, 420],
-        "description": "Rear-side signal — large ROI due to variable position",
+        "roi": [400, 200, 640, 440],
+        "signal_center": [550, 280],
+        "description": "Rear-side signal alias",
+    },
+    "装车楼出口信号灯": {
+        "roi": [230, 20, 330, 120],
+        "signal_center": [266, 88],
+        "description": "Loading exit signal upper-left",
     },
     "exit_signal": {
-        "roi": [520, 330, 630, 400],
-        "signal_center": [573, 370],
-        "description": "Loading exit signal between tracks",
+        "roi": [230, 20, 330, 120],
+        "signal_center": [266, 88],
+        "description": "Loading exit signal alias",
     },
 }
 
@@ -52,14 +67,14 @@ def load_config() -> dict:
     """Load camera config from file, falling back to defaults."""
     config_path = Path(CONFIG_FILE)
     if config_path.exists():
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             return json.load(f)
     return dict(DEFAULT_CONFIG)
 
 
 def save_config(config: dict):
     """Save camera config to file."""
-    with open(CONFIG_FILE, "w") as f:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
@@ -125,26 +140,26 @@ def detect_signal_color_from_frame(
     # Red LED (two sub-ranges for different LED types):
     #   Cool red/magenta: H ≥ 155 (most railway signals)
     #   Warm red/orange:  H ≤ 18, S > 70 (strict S to reject soil/rust)
-    cool_red = (hue >= 155) & (sat > 40) & (val > 60) & mask_roi
-    warm_red = (hue <= 18) & (sat > 70) & (val > 90) & mask_roi
+    cool_red = (hue >= 155) & (sat > 80) & (val > 150) & mask_roi
+    warm_red = (hue <= 18) & (sat > 80) & (val > 150) & mask_roi
     red_mask = cool_red | warm_red
-    red_blobs = _find_blobs(red_mask, max_area=2000)
+    red_blobs = _find_blobs(red_mask, max_area=30000)
     red_score = sum(b["area"] for b in red_blobs)
 
     # Blue LED (strict V > 200 to separate glowing LED from painted surface)
-    blue_mask = (hue >= 85) & (hue <= 125) & (sat > 60) & (val > 200) & mask_roi
-    blue_blobs = _find_blobs(blue_mask, max_area=2000)
+    blue_mask = (hue >= 85) & (hue <= 125) & (sat > 100) & (val > 200) & mask_roi
+    blue_blobs = _find_blobs(blue_mask, max_area=30000)
     blue_score = sum(b["area"] for b in blue_blobs)
 
     # White: very bright + desaturated
-    white_mask = (sat < 50) & (val > 200) & mask_roi
-    white_blobs = _find_blobs(white_mask, max_area=800)
-    white_score = sum(b["area"] for b in white_blobs) * 0.03
+    white_mask = (sat < 50) & (val > 230) & mask_roi
+    white_blobs = _find_blobs(white_mask, max_area=30000)
+    white_score = sum(b["area"] for b in white_blobs) * 0.01
 
     scores = {"blue": blue_score, "red": red_score, "white": white_score}
 
     # Priority logic: red > strict-blue > white
-    if red_score >= 10:
+    if red_score >= 25:
         color = "red"
     elif blue_score >= 10:
         color = "blue"
@@ -181,6 +196,25 @@ def detect_signal_color_from_frame(
             r_mean = np.mean(patch_bgr[:, :, 2].astype(float))
             b_mean = np.mean(patch_bgr[:, :, 0].astype(float))
             if (r_mean - b_mean) < -5:
+                color = "white"
+
+    # --- Signal-center R-B disambiguation (blue vs white) ---
+    # When priority logic picked "blue", check the LED center:
+    # true blue LEDs have B >> R (R-B < -20), white LEDs have R ≈ B.
+    if signal_center and color == "blue":
+        scx, scy = signal_center
+        sx, sy = w_img / 1280, h_img / 720
+        scx, scy = int(scx * sx), int(scy * sy)
+        r = 3  # 7x7 patch
+        py1, py2 = max(0, scy - r), min(h_img, scy + r + 1)
+        px1, px2 = max(0, scx - r), min(w_img, scx + r + 1)
+        patch_v = val[py1:py2, px1:px2]
+        peak_v_center = np.max(patch_v)
+        if peak_v_center > 200:
+            patch_bgr = img[py1:py2, px1:px2]
+            r_mean = np.mean(patch_bgr[:, :, 2].astype(float))
+            b_mean = np.mean(patch_bgr[:, :, 0].astype(float))
+            if abs(r_mean - b_mean) < 30:
                 color = "white"
 
     total_score = sum(scores.values())
