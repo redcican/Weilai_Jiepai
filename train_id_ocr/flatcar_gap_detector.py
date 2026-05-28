@@ -27,8 +27,23 @@ class FlatcarGapDetector:
         profile_var_thresh=20.0,
         profile_min_thresh=25.0,
         asymmetry_thresh=0.45,
-        min_gap_score=2,
+        min_gap_score=7,
+        # 新增：车型模式切换
+        vehicle_type='standard',  # 'standard' 或 'flatcar'
     ):
+        # 根据车型自动切换阈值
+        if vehicle_type == 'flatcar':
+            # 板车专用参数（基于1227帧分布估算）
+            brightness_thresh = 45.0
+            std_thresh = 25.0
+            edge_thresh = 12.0
+            profile_var_thresh = 15.0
+            profile_min_thresh = 20.0
+            asymmetry_thresh = 0.20
+            min_gap_score = 5
+            self._vehicle_type = 'flatcar'
+        else:
+            self._vehicle_type = 'standard'
         self.roi_x_ratio = roi_x_ratio
         self.roi_y_ratio = roi_y_ratio
         self.brightness_thresh = brightness_thresh
@@ -120,6 +135,32 @@ class FlatcarGapDetector:
             img = image
 
         features = self._extract_features(img)
+
+        # v3 新增：中心车钩反光检测（基于全图）
+        # 纯车钩空挡的核心特征：中间窄带有强光反射
+        gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        h, w = gray_full.shape
+        narrow_cx1, narrow_cx2 = int(w * 0.45), int(w * 0.55)
+        narrow_band = gray_full[:, narrow_cx1:narrow_cx2]
+        narrow_mean = np.mean(narrow_band)
+        full_mean = np.mean(gray_full)
+        narrow_bright = np.sum(narrow_band > 200) / narrow_band.size
+        wide_cx1, wide_cx2 = int(w * 0.35), int(w * 0.65)
+        wide_band = gray_full[:, wide_cx1:wide_cx2]
+        col_var = np.var(np.mean(wide_band, axis=0))
+
+        coupler_score = 0.0
+        if full_mean > 0:
+            brightness_ratio = narrow_mean / full_mean
+            if brightness_ratio > 1.55 and 0.015 <= narrow_bright <= 0.08 and col_var < 130:
+                coupler_score = 1.0
+            elif brightness_ratio > 1.54 and narrow_bright < 0.04 and col_var < 130:
+                coupler_score = 0.6
+
+        features["coupler_score"] = coupler_score
+        features["brightness_ratio"] = narrow_mean / full_mean if full_mean > 0 else 0.0
+
+        # 8个主特征评分
         score = 0
         if features["mean_brightness"] > self.brightness_thresh:
             score += 1
@@ -131,18 +172,23 @@ class FlatcarGapDetector:
             score += 1
         if features["profile_min"] > self.profile_min_thresh:
             score += 1
-        # v2 新增：左右不对称性
         if features["asymmetry"] > self.asymmetry_thresh:
             score += 1
-        if features["col_variance"] > 8.0:  # 列方差 > 8 表示有空挡特征
+        if features["col_variance"] > 8.0:
             score += 1
-        # 列极值差：空挡处有金属反光+暗缝隙，极值差异大
         col_range = features["col_max"] - features["col_min"]
         if col_range > 48.0:
             score += 1
 
+        # v3: 车钩反光作为辅助判定
+        # 如果主评分接近阈值但车钩特征强，额外加分
+        if coupler_score >= 1.0:
+            score += 1
+        elif coupler_score >= 0.6 and score >= 5:
+            score += 1
+
         is_gap = score >= self.min_gap_score
-        confidence = score / 8.0  # 满分8分
+        confidence = score / 9.0  # 满分9分（8主+1车钩）
         return is_gap, confidence, features
 
     def visualize(self, image, is_gap, confidence, save_path=None):

@@ -51,6 +51,7 @@ train_id_OCR_figures/
 
 # Output directories
 output_*/
+batch_test_output/
 debug/
 
 # Logs
