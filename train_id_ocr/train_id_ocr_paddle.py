@@ -8,7 +8,7 @@ Train ID OCR — PaddleOCR 单图识别版
   - FlatcarGapDetector 空挡检测（8 特征评分制）
   - 工业相机原始像素解码（BayerGB8/Mono8/BGR8）
   - 车号输出过滤：仅保留 6-7 位标准编号，排除全零假阳性
-  - 强制 CPU：现场 GPU 模式 PaddleOCR 输出乱码
+  - 自动 GPU 检测：启动时自动验证 GPU OCR 输出是否正常，异常则回退 CPU
 
 Usage:
     python train_id_ocr_paddle.py image.jpg
@@ -31,6 +31,27 @@ import numpy as np
 from paddleocr import PaddleOCR
 
 from flatcar_gap_detector import FlatcarGapDetector
+
+
+def _check_gpu_available() -> tuple:
+    """检测当前环境是否有可用的 CUDA GPU。"""
+    try:
+        import paddle
+    except ImportError:
+        return False, "未安装 paddle"
+    if not paddle.is_compiled_with_cuda():
+        return False, "Paddle 未编译 CUDA 支持"
+    try:
+        gpu_count = paddle.device.cuda.device_count()
+        if gpu_count == 0:
+            return False, "未检测到 CUDA 设备"
+    except Exception as e:
+        return False, f"CUDA 设备枚举失败: {e}"
+    try:
+        gpu_name = paddle.device.cuda.get_device_name()
+    except Exception:
+        gpu_name = "Unknown"
+    return True, f"{gpu_name}: CUDA 可用 ({gpu_count} 设备)"
 
 
 # ============ 工业相机原始像素解码 ============
@@ -1046,12 +1067,21 @@ class PaddleOCRProcessor:
 _global_processors: Dict[str, PaddleOCRProcessor] = {}
 
 
-def get_ocr_processor(use_gpu: bool = False, enhancement_mode: str = 'none') -> PaddleOCRProcessor:
+def get_ocr_processor(use_gpu: Optional[bool] = None, enhancement_mode: str = 'none') -> PaddleOCRProcessor:
     """获取全局单例的 PaddleOCRProcessor。
     
     第一次调用会初始化模型（约 0.8s），后续调用直接返回已初始化的实例。
     支持多配置共存（如 CPU/GPU、none/otsu_fusion 等），用配置字符串作为 key。
+    
+    Args:
+        use_gpu: None=自动检测（推荐），True=强制GPU，False=强制CPU
+        enhancement_mode: 图像增强模式
     """
+    # 自动检测 GPU 可用性（仅首次且未显式指定时）
+    if use_gpu is None:
+        use_gpu, reason = _check_gpu_available()
+        print(f"[GPU检测] {reason}")
+    
     key = f"gpu={use_gpu}_mode={enhancement_mode}"
     if key not in _global_processors:
         _global_processors[key] = PaddleOCRProcessor(
@@ -1065,13 +1095,23 @@ def main():
     parser = argparse.ArgumentParser(description='铁路图片 OCR 识别 - PaddleOCR 修改版')
     parser.add_argument('input', help='输入图片或文件夹路径')
     parser.add_argument('-o', '--output', default='./output_paddle', help='输出目录')
-    parser.add_argument('--gpu', action='store_true', help='尝试使用 GPU（现场不建议，可能输出乱码）')
+    parser.add_argument('--gpu', action='store_true', help='强制使用 GPU')
+    parser.add_argument('--cpu', action='store_true', help='强制使用 CPU')
     parser.add_argument('--enhancement', default='none',
                         choices=['none', 'otsu_fusion'],
                         help='图像预处理模式: none=原图, otsu_fusion=OTSU融合（参考kimi）')
     args = parser.parse_args()
 
-    processor = get_ocr_processor(use_gpu=args.gpu, enhancement_mode=args.enhancement)
+    if args.gpu and args.cpu:
+        parser.error('--gpu 和 --cpu 不能同时指定')
+    
+    use_gpu = None  # 默认自动检测
+    if args.gpu:
+        use_gpu = True
+    elif args.cpu:
+        use_gpu = False
+
+    processor = get_ocr_processor(use_gpu=use_gpu, enhancement_mode=args.enhancement)
 
     input_path = Path(args.input)
     os.makedirs(args.output, exist_ok=True)

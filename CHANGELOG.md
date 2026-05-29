@@ -1,5 +1,75 @@
 # 更新日志
 
+## [0.10.6] - 2026-05-29
+
+### 功能
+- **89 种标准铁路货车车型白名单** — `train_id_ocr_paddle.py` 新增 `_CHINA_RAIL_VEHICLE_TYPES`
+  - 覆盖 C 系列（C50/C70E/C80 等）、P 系列、G 系列、X 系列、K 系列等 89 种标准车型
+  - 误识从 18 段非标准字符串降至 0 段
+  - 新增 `_is_vehicle_type_pattern()` 进行白名单精确匹配 + 近似匹配
+- **车型近似匹配** — 单字符删除修复，如 `C701E` → `C70E`
+  - 候选在白名单中时，允许删除一个字符修复常见漏框/误识
+- **空挡检测 v3 优化** — `flatcar_gap_detector.py` 增加车钩反光辅助特征
+  - 中央 45%-55% 窄带亮度比 > 1.55 且高亮像素 1.5%-8% → coupler_score=1.0
+  - `min_gap_score` 从 6 提至 7，误检从 172 帧(21.9%)降至 19 帧(2.4%)
+- **板车空挡模式** — `FlatcarGapDetector` 支持 `vehicle_type='flatcar'`
+  - 亮度/标准差/边缘阈值针对板车暗光场景重新校准
+  - 板车及格线 5 分 vs 标准模式 7 分
+- **GPU 自动检测** — `get_ocr_processor()` 默认自动检测 CUDA 可用性
+  - 内联 `_check_gpu_available()`，有 CUDA 则自动启用 GPU，无则回退 CPU
+  - CLI 新增 `--gpu`/`--cpu` 强制开关（互斥），默认不传时自动检测
+  - 解决现场 3060 有 GPU 但代码硬编码 CPU 导致的性能瓶颈
+- **全局单例缓存** — `get_ocr_processor()` 避免每次 API 调用重复初始化 PaddleOCR
+  - 首次初始化 ~0.8s，后续直接返回缓存实例
+  - 支持多配置共存（CPU/GPU × 增强模式），用配置字符串作为 key
+
+### 修复
+- **空挡检测硬编码** — `_process_img()` 取消 `is_gap=False` 硬编码，真正调用 `FlatcarGapDetector`
+  - 之前代码写了检测逻辑但从未执行，空挡帧仍走完整 OCR 浪费性能
+- **`is_train_param()` 误杀车型** — 移除宽泛的 `'t'` 关键词匹配
+  - 改为 `\d+t` 精确匹配（如 `70t`），避免 `CTOE` 等车型含 `T` 被误过滤为参数
+- **车型纠错增强** — `_fix_vehicle_type()` 新增 T→7、O→0 直接映射
+  - `CTOE` → `C70E`，命中白名单即返回，无需逐字符修复链
+- **标准车型补全** — 白名单新增 `C70EH`、`C70BH`
+
+### 重构
+- **`get_ocr_processor()` 签名** — `use_gpu: bool = False` → `use_gpu: Optional[bool] = None`
+  - `None` 表示自动检测，`True`/`False` 表示强制指定
+
+### 代码清理
+- 删除 `train_id_ocr/gap_detector_v2.py`（未使用的旧版空挡检测器）
+- 移除 `train_id_ocr_paddle.py` 中未使用的 `Counter` 导入
+- 更新 `.gitignore`
+
+### 文件变更
+- 修改 `train_id_ocr/train_id_ocr_paddle.py` — 白名单、近似匹配、车型纠错、空挡检测启用、GPU 自动检测、全局单例
+- 修改 `train_id_ocr/flatcar_gap_detector.py` — 车钩反光特征、板车空挡模式、阈值优化
+- 删除 `train_id_ocr/gap_detector_v2.py`
+
+## [0.10.5] - 2026-05-23
+
+### 修复
+- **信号灯检测阈值校准** — `Light_signal/signal_detect.py` 全面收紧 HSV 阈值，消除灰墙面/反光假阳性
+  - `white_mask`: `(sat < 100, val > 220)` → `(sat < 50, val > 230)`，消除无灯场景误判为 white
+  - `warm_red`: `sat > 70` → `sat > 80`，`val > 90` → `val > 150`，减少夕阳/车厢反光误报
+  - `cool_red`: `sat > 40` → `sat > 80`，`val > 60` → `val > 150`，避免白灯 Hue≈173 被误判为 red
+  - red 触发阈值: `≥ 10` → `≥ 25`，提高红色判定门槛
+  - `_find_blobs` max_area: `2000` → `30000`，保留大体积蓝色 LED blob（约 27,000 像素）
+- **Blue → White BGR 消歧** — 当 HSV 将白灯误判为 blue 时（Hue≈90-110 重叠区），检查 `signal_center` 附近 BGR 值
+  - 若 `peak_v > 200` 且 `abs(R-B) < 30`（白色 LED 近似中性灰），回退为 white
+  - 解决夜间/白天白灯被 blue mask 截获的问题
+- **Red → White BGR 消歧** — 当 HSV 将白灯误判为 red 时，检查 `signal_center` 附近
+  - 若 `peak_v > 200`、`mean_s < 50` 且 `(R-B) < -5`，回退为 white
+- **CONFIG_FILE 路径修复** — 从相对当前工作目录改为 `Path(__file__).parent / "signal_config.json"`，避免 CWD 不同时找不到配置
+- **UTF-8 编码显式声明** — `load_config()` / `save_config()` 添加 `encoding="utf-8"`，修复中文配置键读取异常
+- **DEFAULT_CONFIG 同步** — 将 `exit_signal` 和 `rear_signal` 的 ROI / `signal_center` 与 `signal_config.json` 保持一致
+  - `exit_signal`: ROI `[520, 330, 630, 400]` → `[230, 20, 330, 120]`，`signal_center` `[573, 370]` → `[266, 88]`
+  - `rear_signal`: ROI `[468, 228, 628, 388]` → `[400, 200, 640, 440]`，`signal_center` `[548, 308]` → `[550, 280]`
+
+### 文件变更
+- 修改 `Light_signal/signal_detect.py`
+- 新增 `Light_signal/signal_config.json`（未纳入 Git 跟踪）
+
 ## [0.10.4] - 2026-05-21
 
 ### 功能
@@ -194,7 +264,7 @@
     - Pass 2：滑动窗口分块（640px 瓦片，30% 重叠），捕获小目标/边缘目标
   - **安全装备颜色验证** — 分块检测后通过 HSV 色彩分析过滤误检：
     - 橙色安全帽：H=5-22, S>100, V>100
-    - 荧光背心：H=25-85, S>60, V>80
+    - 荧光背心：H=25-85, S>60, V=80
     - 阈值 100 像素完美分离真检测（最低 103）与误检（最高 93）
   - 40 张测试图片准确率 **100%**（20 张异常 + 20 张正常）
   - GPU 推理支持：API 层 `use_gpu` 参数 + 配置 `DMS_PEDESTRIAN_DETECTION_USE_GPU`
