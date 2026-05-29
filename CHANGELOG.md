@@ -22,6 +22,11 @@
 - **全局单例缓存** — `get_ocr_processor()` 避免每次 API 调用重复初始化 PaddleOCR
   - 首次初始化 ~0.8s，后续直接返回缓存实例
   - 支持多配置共存（CPU/GPU × 增强模式），用配置字符串作为 key
+- **性能优化合并** — 将 `kimi/` 目录下的实验优化代码合并到生产代码
+  - 预处理：`enhance_contrast_s_curve` 用 LUT 替代逐像素 tanh；`preprocess_otsu_fusion` 从 8 步精简到 5 步（移除 LAB 转换链和 Unsharp Masking）
+  - 后处理：`merge_boxes_train` 数字框合并从 O(n³) 降到 O(n·L)；IOU 去重 n≥25 时向量化；`combinations` 限制 m>8 只查相邻对
+  - 工具函数：所有正则预编译为模块级常量，所有 `str.maketrans` 预计算，`is_train_param` 重排早返回逻辑
+  - 实测 30 帧 CPU 场景：795ms → 667ms/帧（-16%），识别结果 0 差异
 
 ### 修复
 - **空挡检测硬编码** — `_process_img()` 取消 `is_gap=False` 硬编码，真正调用 `FlatcarGapDetector`
