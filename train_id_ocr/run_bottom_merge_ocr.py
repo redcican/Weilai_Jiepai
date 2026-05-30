@@ -367,13 +367,23 @@ class FlatcarBottomProcessor:
         """Process a decoded BGR image and return flatcar recognition results."""
         # ========== 空挡检测 ==========
         is_gap = False
+        gap_score = 0
+        gap_features = {}
         if self.gap_detector is not None:
             try:
-                is_gap, _, _ = self.gap_detector.detect(img)
-                if is_gap:
-                    print(f"  [Flatcar空挡检测] 空挡帧")
-                else:
-                    print(f"  [Flatcar空挡检测] 正常帧")
+                is_gap, gap_conf, gap_features = self.gap_detector.detect(img)
+                gap_score = int(gap_conf * 8)
+                feat_str = (
+                    f"mb={gap_features.get('mean_brightness', 0):.0f} "
+                    f"std={gap_features.get('std_brightness', 0):.0f} "
+                    f"edge={gap_features.get('edge_score', 0):.0f} "
+                    f"pv={gap_features.get('profile_variance', 0):.0f} "
+                    f"pm={gap_features.get('profile_min', 0):.0f} "
+                    f"asy={gap_features.get('asymmetry', 0):.2f} "
+                    f"cv={gap_features.get('col_variance', 0):.0f} "
+                    f"cr={gap_features.get('col_max', 0)-gap_features.get('col_min', 0):.0f}"
+                )
+                print(f"  [Flatcar空挡检测] {'空挡' if is_gap else '正常'} 得分={gap_score}/8 特征=[{feat_str}]")
             except Exception as e:
                 print(f"  [Flatcar空挡检测] 检测异常: {e}")
 
@@ -440,6 +450,8 @@ class FlatcarBottomProcessor:
             "vehicleType": vehicle_type,
             "vehicleNumber": vehicle_number,
             "confidence": avg_conf,
+            "gapScore": gap_score,
+            "gapFeatures": {k: round(float(v), 2) for k, v in gap_features.items()} if gap_features else {},
         }
 
 

@@ -18,6 +18,13 @@ Usage:
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
+# 确保本模块在包内导入时也能找到同目录的 flatcar_gap_detector
+import sys
+from pathlib import Path
+_current_dir = Path(__file__).parent
+if str(_current_dir) not in sys.path:
+    sys.path.insert(0, str(_current_dir))
+
 import re
 import json
 import argparse
@@ -31,6 +38,15 @@ import numpy as np
 from paddleocr import PaddleOCR
 
 from flatcar_gap_detector import FlatcarGapDetector
+
+# ============ 多进程并发支持 ============
+import multiprocessing as mp
+import time as _time
+import threading as _threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# spawn: 重新初始化 Python 解释器创建子进程（最安全，避免 PaddleOCR 线程锁死锁）
+_MPOOL_CTX = mp.get_context('spawn')
 
 
 def _check_gpu_available() -> tuple:
@@ -1163,6 +1179,10 @@ class PaddleOCRProcessor:
         except Exception as e:
             print(f"ERROR: PaddleOCR init failed: {e}")
 
+    @property
+    def available(self) -> bool:
+        return self.ocr is not None
+
     def _preprocess(self, image: np.ndarray) -> np.ndarray:
         """根据配置选择预处理模式。"""
         if self.enhancement_mode == 'otsu_fusion':
@@ -1296,21 +1316,207 @@ class PaddleOCRProcessor:
 _global_processors: Dict[str, PaddleOCRProcessor] = {}
 
 
-def get_ocr_processor(use_gpu: Optional[bool] = None, enhancement_mode: str = 'none') -> PaddleOCRProcessor:
-    """获取全局单例的 PaddleOCRProcessor。
-    
-    第一次调用会初始化模型（约 0.8s），后续调用直接返回已初始化的实例。
-    支持多配置共存（如 CPU/GPU、none/otsu_fusion 等），用配置字符串作为 key。
-    
-    Args:
-        use_gpu: None=自动检测（推荐），True=强制GPU，False=强制CPU
-        enhancement_mode: 图像增强模式
+# ============ 多进程 OCR 工作池 ============
+
+@dataclass
+class FrameFilterConfig:
+    """帧过滤器配置（多摄像头场景降采样用）。"""
+    min_interval_sec: float = 0.15   # 同一摄像头最小处理间隔
+    cache_ttl_sec: float = 3.0       # 结果缓存有效期
+    enable_cache: bool = True        # 是否启用缓存
+
+
+class SmartFrameFilter:
+    """智能帧过滤器 — 减少冗余 OCR 调用。
+    1) 时间降采样：同一摄像头在 min_interval_sec 内只处理 1 帧
+    2) 结果缓存：相同画面直接返回缓存
     """
-    # 自动检测 GPU 可用性（仅首次且未显式指定时）
+    def __init__(self, config: Optional[FrameFilterConfig] = None):
+        self.cfg = config or FrameFilterConfig()
+        self._lock = _threading.Lock()
+        self._last_time: Dict[str, float] = {}
+        self._cache: Dict[str, Tuple[float, ImageResult]] = {}
+
+    def should_process(self, cam_id: str) -> bool:
+        with self._lock:
+            now = _time.time()
+            last = self._last_time.get(cam_id, 0.0)
+            if now - last < self.cfg.min_interval_sec:
+                return False
+            self._last_time[cam_id] = now
+            return True
+
+    def get_cached(self, cam_id: str) -> Optional[ImageResult]:
+        if not self.cfg.enable_cache:
+            return None
+        with self._lock:
+            entry = self._cache.get(cam_id)
+            if entry is None:
+                return None
+            ts, result = entry
+            if _time.time() - ts > self.cfg.cache_ttl_sec:
+                del self._cache[cam_id]
+                return None
+            import copy
+            return copy.deepcopy(result)
+
+    def cache_result(self, cam_id: str, result: ImageResult):
+        if self.cfg.enable_cache:
+            with self._lock:
+                self._cache[cam_id] = (_time.time(), result)
+
+
+# Worker 进程全局变量（每个 worker 独立一份）
+_worker_processor: Optional[PaddleOCRProcessor] = None
+
+
+def _mp_init_worker(use_gpu: bool, enhancement_mode: str):
+    """Multiprocessing Pool initializer：在每个 worker 中创建 OCR 实例。"""
+    global _worker_processor
+    import os
+    os.environ['PADDLEOCR_QUIET'] = '1'
+    _worker_processor = PaddleOCRProcessor(
+        use_gpu=use_gpu, enhancement_mode=enhancement_mode
+    )
+
+
+def _mp_process_bytes(image_bytes: bytes) -> ImageResult:
+    global _worker_processor
+    if _worker_processor is None:
+        return ImageResult()
+    return _worker_processor.process_bytes(image_bytes)
+
+
+def _mp_process_raw_bytes(image_bytes: bytes, pixel_type: int, width: int, height: int) -> ImageResult:
+    global _worker_processor
+    if _worker_processor is None:
+        return ImageResult()
+    return _worker_processor.process_raw_bytes(image_bytes, pixel_type, width, height)
+
+
+class PaddleOCRProcessPool:
+    """多进程 OCR 处理器 — API 与 PaddleOCRProcessor 完全一致。
+    内部维护 multiprocessing.Pool，将 OCR 任务分发到多个工作进程并行执行。
+    """
+    def __init__(self, num_workers: int = 4, use_gpu: bool = False,
+                 enhancement_mode: str = 'none',
+                 frame_filter_config: Optional[FrameFilterConfig] = None):
+        if num_workers is None or num_workers < 2:
+            num_workers = 2
+        self.num_workers = num_workers
+        self._closed = False
+        self._filter = SmartFrameFilter(frame_filter_config)
+
+        self._pool = _MPOOL_CTX.Pool(
+            processes=num_workers,
+            initializer=_mp_init_worker,
+            initargs=(use_gpu, enhancement_mode),
+        )
+        print(f"INFO: PaddleOCRProcessPool created with {num_workers} workers")
+
+    @property
+    def available(self) -> bool:
+        return not self._closed
+
+    @property
+    def ocr(self):
+        """兼容属性：进程池本身没有单例 OCR 实例，返回 truthy 值表示可用。"""
+        return self.available
+
+    def process(self, image_path: str) -> ImageResult:
+        img_array = np.fromfile(image_path, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is None:
+            print(f"ERROR: Cannot read image: {image_path}")
+            return ImageResult()
+        return self.process_bytes(cv2.imencode('.jpg', img)[1].tobytes())
+
+    def process_bytes(self, image_bytes: bytes, cam_id: Optional[str] = None) -> ImageResult:
+        self._check_closed()
+        if cam_id is not None:
+            if not self._filter.should_process(cam_id):
+                cached = self._filter.get_cached(cam_id)
+                return cached if cached is not None else ImageResult()
+            cached = self._filter.get_cached(cam_id)
+            if cached is not None:
+                return cached
+        result: ImageResult = self._pool.apply(_mp_process_bytes, (image_bytes,))
+        if cam_id is not None:
+            self._filter.cache_result(cam_id, result)
+        return result
+
+    def process_raw_bytes(self, image_bytes: bytes, pixel_type: int, width: int, height: int,
+                          cam_id: Optional[str] = None) -> ImageResult:
+        self._check_closed()
+        if cam_id is not None:
+            if not self._filter.should_process(cam_id):
+                cached = self._filter.get_cached(cam_id)
+                return cached if cached is not None else ImageResult()
+            cached = self._filter.get_cached(cam_id)
+            if cached is not None:
+                return cached
+        result: ImageResult = self._pool.apply(
+            _mp_process_raw_bytes, (image_bytes, pixel_type, width, height)
+        )
+        if cam_id is not None:
+            self._filter.cache_result(cam_id, result)
+        return result
+
+    def _check_closed(self):
+        if self._closed:
+            raise RuntimeError("PaddleOCRProcessPool is already closed")
+
+    def close(self):
+        if not self._closed:
+            self._pool.close()
+            self._pool.join()
+            self._closed = True
+            print("INFO: PaddleOCRProcessPool closed")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+
+_global_processors: Dict[str, PaddleOCRProcessor] = {}
+_global_pools: Dict[str, PaddleOCRProcessPool] = {}
+
+
+def get_ocr_processor(
+    use_gpu: Optional[bool] = None,
+    enhancement_mode: str = 'none',
+    num_workers: Optional[int] = None,
+    frame_filter_config: Optional[FrameFilterConfig] = None,
+):
+    """获取 OCR 处理器（单进程或多进程）。
+
+    现场只需改一行即可切换到多进程模式：
+        processor = get_ocr_processor(num_workers=4)
+
+    Args:
+        use_gpu: None=自动检测, True=强制GPU, False=强制CPU
+        enhancement_mode: 图像增强模式
+        num_workers: None=单进程, int>1=多进程（工作进程数）
+        frame_filter_config: 帧过滤器配置（仅多进程模式有效）
+    """
     if use_gpu is None:
         use_gpu, reason = _check_gpu_available()
         print(f"[GPU检测] {reason}")
-    
+
+    if num_workers is not None and num_workers > 1:
+        key = f"pool_gpu={use_gpu}_mode={enhancement_mode}_workers={num_workers}"
+        if key not in _global_pools:
+            _global_pools[key] = PaddleOCRProcessPool(
+                num_workers=num_workers,
+                use_gpu=use_gpu,
+                enhancement_mode=enhancement_mode,
+                frame_filter_config=frame_filter_config,
+            )
+        return _global_pools[key]
+
     key = f"gpu={use_gpu}_mode={enhancement_mode}"
     if key not in _global_processors:
         _global_processors[key] = PaddleOCRProcessor(

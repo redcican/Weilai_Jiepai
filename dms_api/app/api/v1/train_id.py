@@ -7,7 +7,7 @@ Supports single image and batch processing using train_id_ocr_paddle.
 
 import logging
 
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 
 from ...schemas.train_id import (
@@ -58,6 +58,7 @@ def _get_error_response(
 )
 async def recognize_train_id(
     image: UploadFile = File(..., description="列车图片文件"),
+    cam_id: str | None = Form(None, description="摄像头标识（如 cam1/cam2/cam3/cam4），用于帧过滤降采样"),
 ) -> TrainIDResponse | JSONResponse:
     """Recognize train vehicle type and number from a single image."""
     service = get_train_id_service_singleton()
@@ -72,7 +73,7 @@ async def recognize_train_id(
 
     try:
         image_bytes = await image.read()
-        data = await service.recognize_image(image_bytes, image.filename)
+        data = await service.recognize_image(image_bytes, image.filename, cam_id=cam_id)
 
         return TrainIDResponse(
             success=True,
@@ -103,6 +104,7 @@ async def recognize_train_id(
 )
 async def recognize_train_id_batch(
     images: list[UploadFile] = File(..., description="列车图片文件列表"),
+    cam_id: str | None = Form(None, description="摄像头标识，批量图片来自同一摄像头时启用帧过滤"),
 ) -> TrainIDBatchResponse | JSONResponse:
     """Recognize train IDs from multiple images."""
     service = get_train_id_service_singleton()
@@ -119,7 +121,7 @@ async def recognize_train_id_batch(
         items = []
         for image in images:
             image_bytes = await image.read()
-            data = await service.recognize_image(image_bytes, image.filename)
+            data = await service.recognize_image(image_bytes, image.filename, cam_id=cam_id)
             items.append(TrainIDBatchItem(
                 filename=image.filename,
                 type=data.type,

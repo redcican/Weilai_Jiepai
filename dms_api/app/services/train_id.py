@@ -2,9 +2,10 @@
 Train ID Service
 
 Business logic for train identification recognition operations.
-直接复用 train_id_ocr_paddle.py 的 PaddleOCRProcessor。
+直接复用 train_id_ocr_paddle.py 的 PaddleOCRProcessor / PaddleOCRProcessPool。
 """
 
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -15,7 +16,12 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from train_id_ocr.train_id_ocr_paddle import PaddleOCRProcessor, ImageResult
+from train_id_ocr.train_id_ocr_paddle import (
+    get_ocr_processor,
+    PaddleOCRProcessor,
+    ImageResult,
+    FrameFilterConfig,
+)
 from train_id_ocr.run_bottom_merge_ocr import FlatcarBottomProcessor
 
 from ..schemas.train_id import TrainIDData, TrainIDBatchItem, FlatcarData
@@ -27,23 +33,32 @@ class TrainIDService:
     """
     Service for train ID recognition operations.
 
-    直接复用 train_id_ocr_paddle.py 的 PaddleOCRProcessor，
-    保证 API 和 CLI 使用同一份核心代码。
+    4摄像头并发场景：使用多进程 OCR 工作池（num_workers=4），
+    每个工作进程有独立 PaddleOCR 实例，绕过 Python GIL 限制。
     """
 
     _ocr_processor: Optional[PaddleOCRProcessor] = None
     _flatcar_processor: Optional[FlatcarBottomProcessor] = None
+    _thread_pool: Optional[asyncio.AbstractEventLoop] = None
 
     @classmethod
-    def get_ocr_processor(cls) -> PaddleOCRProcessor:
-        """Get singleton PaddleOCR processor instance (from train_id_ocr_paddle)."""
+    def get_ocr_processor(cls):
+        """Get OCR processor instance (multi-process pool for concurrent cameras)."""
         if cls._ocr_processor is None:
-            cls._ocr_processor = PaddleOCRProcessor()
+            # num_workers=4: 4个独立OCR工作进程，适配4摄像头并发场景
+            cls._ocr_processor = get_ocr_processor(
+                num_workers=4,
+                frame_filter_config=FrameFilterConfig(
+                    min_interval_sec=0.15,   # 150ms内重复帧跳过
+                    cache_ttl_sec=3.0,
+                    enable_cache=True,
+                ),
+            )
         return cls._ocr_processor
 
     @classmethod
     def get_flatcar_processor(cls) -> FlatcarBottomProcessor:
-        """Get singleton flatcar bottom processor instance (from run_bottom_merge_ocr)."""
+        """Get singleton flatcar bottom processor instance."""
         if cls._flatcar_processor is None:
             cls._flatcar_processor = FlatcarBottomProcessor()
         return cls._flatcar_processor
@@ -51,7 +66,7 @@ class TrainIDService:
     @property
     def available(self) -> bool:
         """Check if train ID engine is available."""
-        return self.get_ocr_processor().ocr is not None
+        return self.get_ocr_processor().available
 
     @property
     def flatcar_available(self) -> bool:
@@ -69,22 +84,22 @@ class TrainIDService:
         pixel_type: int | None = None,
         width: int | None = None,
         height: int | None = None,
+        cam_id: Optional[str] = None,
     ) -> TrainIDData:
         """
         Recognize vehicle type and number from an image.
 
         Supports both JPEG/PNG and raw camera pixel data (Bayer/Mono).
-        If pixel_type + width + height are provided, uses raw pixel decode.
-        Otherwise uses cv2.imdecode for JPEG/PNG.
-
-        直接复用 train_id_ocr_paddle.py 的 PaddleOCRProcessor，
-        支持空挡检测(type字段)。
+        Multi-process: OCR inference runs in a worker process pool,
+        wrapped with run_in_executor to avoid blocking the event loop.
         """
         processor = self.get_ocr_processor()
 
-        if processor.ocr is None:
+        if not processor.available:
             logger.error("Train ID engine not available")
             return TrainIDData()
+
+        loop = asyncio.get_event_loop()
 
         if pixel_type is not None and width is not None and height is not None:
             logger.info(
@@ -92,10 +107,21 @@ class TrainIDService:
                 f"pixel_type=0x{pixel_type:08X}, size={len(image_bytes)} bytes, "
                 f"{width}x{height}"
             )
-            result: ImageResult = processor.process_raw_bytes(image_bytes, pixel_type, width, height)
+            # 异步包装：在线程池中执行同步的进程池调用
+            result: ImageResult = await loop.run_in_executor(
+                None,
+                processor.process_raw_bytes,
+                image_bytes, pixel_type, width, height,
+                cam_id,
+            )
         else:
             logger.info(f"Processing train ID image: {filename}, size={len(image_bytes)} bytes")
-            result: ImageResult = processor.process_bytes(image_bytes)
+            result: ImageResult = await loop.run_in_executor(
+                None,
+                processor.process_bytes,
+                image_bytes,
+                cam_id,
+            )
 
         return self._build_train_id_data(result)
 
@@ -140,13 +166,20 @@ class TrainIDService:
     async def recognize_batch(
         self,
         images: list[tuple[bytes, str]],
+        cam_id: Optional[str] = None,
     ) -> list[TrainIDBatchItem]:
         """
         Recognize vehicle info from multiple images.
+        使用 asyncio.gather 并行处理批量请求。
         """
+        tasks = [
+            self.recognize_image(image_bytes, filename, cam_id=cam_id)
+            for image_bytes, filename in images
+        ]
+        datas = await asyncio.gather(*tasks)
+
         results = []
-        for image_bytes, filename in images:
-            data = await self.recognize_image(image_bytes, filename)
+        for (image_bytes, filename), data in zip(images, datas):
             results.append(TrainIDBatchItem(
                 filename=filename,
                 type=data.type,
@@ -172,13 +205,6 @@ class TrainIDService:
     ) -> FlatcarData:
         """
         Recognize flatcar type and number from an image.
-
-        Supports both JPEG/PNG and raw camera pixel data (Bayer/Mono).
-        If pixel_type + width + height are provided, uses raw pixel decode.
-        Otherwise uses cv2.imdecode for JPEG/PNG.
-
-        使用 run_bottom_merge_ocr.py 的 FlatcarBottomProcessor，
-        底部区域（75%-100% 高度）+ 暗光增强 + 同行框拼接。
         """
         processor = self.get_flatcar_processor()
 
@@ -186,22 +212,46 @@ class TrainIDService:
             logger.error("Flatcar engine not available")
             return FlatcarData()
 
+        loop = asyncio.get_event_loop()
+
         if pixel_type is not None and width is not None and height is not None:
             logger.info(
                 f"Processing raw flatcar image: {filename}, "
                 f"pixel_type=0x{pixel_type:08X}, size={len(image_bytes)} bytes, "
                 f"{width}x{height}"
             )
-            result = processor.process_raw_bytes(image_bytes, pixel_type, width, height)
+            result = await loop.run_in_executor(
+                None,
+                processor.process_raw_bytes,
+                image_bytes, pixel_type, width, height,
+            )
         else:
             logger.info(f"Processing flatcar image: {filename}, size={len(image_bytes)} bytes")
-            result = processor.process_bytes(image_bytes)
+            result = await loop.run_in_executor(
+                None,
+                processor.process_bytes,
+                image_bytes,
+            )
 
+        gap_info = ""
+        if result.get("gapFeatures"):
+            gf = result["gapFeatures"]
+            gap_info = (
+                f" gap_score={result.get('gapScore', 0)}/8"
+                f" mb={gf.get('mean_brightness', 0):.0f}"
+                f" std={gf.get('std_brightness', 0):.0f}"
+                f" edge={gf.get('edge_score', 0):.0f}"
+                f" pv={gf.get('profile_variance', 0):.0f}"
+                f" pm={gf.get('profile_min', 0):.0f}"
+                f" asy={gf.get('asymmetry', 0):.2f}"
+                f" cv={gf.get('col_variance', 0):.0f}"
+                f" cr={gf.get('col_max', 0) - gf.get('col_min', 0):.0f}"
+            )
         logger.info(
             f"Flatcar result: type='{result.get('type', '')}' "
             f"vehicleType='{result['vehicleType']}' "
             f"number='{result['vehicleNumber']}' "
-            f"confidence={result['confidence']:.3f}"
+            f"confidence={result['confidence']:.3f}{gap_info}"
         )
 
         return FlatcarData(
