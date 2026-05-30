@@ -1506,6 +1506,15 @@ def get_ocr_processor(
         use_gpu, reason = _check_gpu_available()
         print(f"[GPU检测] {reason}")
 
+    # 自动决策：有GPU用单进程GPU（最快），无GPU用多进程CPU（保底）
+    if num_workers is None:
+        if use_gpu:
+            print("[自动决策] GPU可用，使用单进程GPU模式（OCR~50ms）")
+            num_workers = 1  # 单进程，但>0不走多进程分支
+        else:
+            print("[自动决策] GPU不可用，使用4进程CPU模式（OCR~200ms×4并发）")
+            num_workers = 4
+
     if num_workers is not None and num_workers > 1:
         key = f"pool_gpu={use_gpu}_mode={enhancement_mode}_workers={num_workers}"
         if key not in _global_pools:

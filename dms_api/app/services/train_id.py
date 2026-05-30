@@ -45,9 +45,9 @@ class TrainIDService:
     def get_ocr_processor(cls):
         """Get OCR processor instance (multi-process pool for concurrent cameras)."""
         if cls._ocr_processor is None:
-            # num_workers=4: 4个独立OCR工作进程，适配4摄像头并发场景
+            # 自动决策：GPU可用→单进程GPU（最快），无GPU→4进程CPU（保底）
+            # 4摄像头并发场景下，GPU单进程已能满足3fps，CPU才需要多进程兜底
             cls._ocr_processor = get_ocr_processor(
-                num_workers=4,
                 frame_filter_config=FrameFilterConfig(
                     min_interval_sec=0.15,   # 150ms内重复帧跳过
                     cache_ttl_sec=3.0,
