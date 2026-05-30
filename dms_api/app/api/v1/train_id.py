@@ -118,19 +118,10 @@ async def recognize_train_id_batch(
         )
 
     try:
-        items = []
-        for image in images:
-            image_bytes = await image.read()
-            data = await service.recognize_image(image_bytes, image.filename, cam_id=cam_id)
-            items.append(TrainIDBatchItem(
-                filename=image.filename,
-                type=data.type,
-                vehicleType=data.vehicle_type,
-                vehicleNumber=data.vehicle_number,
-                confidence=data.confidence,
-                container=data.container,
-                containerConfidence=data.container_confidence,
-            ))
+        # 读取所有图片字节
+        image_tuples = [(await img.read(), img.filename) for img in images]
+        # 并行OCR（内部使用 asyncio.gather）
+        items = await service.recognize_batch(image_tuples, cam_id=cam_id)
 
         return TrainIDBatchResponse(
             success=True,
