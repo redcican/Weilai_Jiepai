@@ -34,14 +34,29 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Large image files
+# Large image / video files
 *.bmp
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.tiff
+*.webp
+*.mp4
+*.avi
+*.mov
+*.mkv
 train_id_OCR_figures/
+车厢号识别/
+
+# Output directories
+output_*/
+batch_test_output/
+debug/
+
+# Logs
+*.log
+server.log
 
 # Claude Code
 .claude/
-
-# Debug output
-debug/
-
-*.mp4

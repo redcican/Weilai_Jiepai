@@ -13,6 +13,8 @@ class SignalLightItem(BaseSchema):
 
     filename: str = Field(..., description="Original filename")
     color: str = Field(..., description="Detected color (红色/白色/蓝色/未知)")
+    confidence: float = Field(0.0, description="Detection confidence (0.0-1.0)")
+    scores: dict = Field(default_factory=dict, description="Per-color blob scores")
 
 
 class SignalLightBatchResponse(ResponseSchema[list[SignalLightItem]]):

@@ -1,84 +1,184 @@
 """
-Train ID Recognition API Endpoints
+Train ID Recognition Endpoints
 
-Endpoints for station-entry vehicle identification (车种/车号) recognition.
+FastAPI router for train identification recognition.
+Supports single image and batch processing using train_id_ocr_paddle.
 """
 
-from fastapi import APIRouter, UploadFile, File, status
-from typing import Annotated
+import logging
 
-from ...dependencies import TrainIDServiceDep, RequestIdDep
-from ...schemas.train_id import TrainIDResponse, TrainIDBatchResponse, TrainIDData, TrainIDBatchItem
+from fastapi import APIRouter, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 
-router = APIRouter(prefix="/train-id", tags=["Train ID Recognition"])
+from ...schemas.train_id import (
+    TrainIDResponse,
+    TrainIDBatchResponse,
+    TrainIDBatchItem,
+    FlatcarResponse,
+)
+from ...services.train_id import get_train_id_service_singleton
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/train-id")
+
+
+def _get_error_response(
+    message: str,
+    status_code: int = 500,
+    endpoint: str = "",
+) -> JSONResponse:
+    """Create a standard error JSONResponse."""
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "success": False,
+            "message": message,
+            "data": None,
+            "endpoint": endpoint,
+        },
+    )
 
 
 @router.post(
     "/recognize",
     response_model=TrainIDResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Recognize train ID from image",
-    description="""
-    Recognize vehicle type (车种) and vehicle number (车号) from a
-    station-entry camera image.
-
-    Supported file formats: JPEG, PNG, BMP, TIFF, WebP
-
-    The OCR system uses multi-pass preprocessing with hybrid detection
-    models to extract:
-    - Vehicle type code (e.g. C64K, C70E, NX70)
-    - Vehicle number (e.g. 49 31846)
-    """,
     responses={
         200: {"description": "Train ID recognized successfully"},
-        400: {"description": "Invalid file format"},
-        422: {"description": "Recognition processing failed"},
+        400: {"description": "Invalid image format"},
+        422: {"description": "OCR processing failed"},
+        503: {"description": "Engine not available"},
     },
+    summary="识别单张列车图片（车种/车号）",
+    description="""
+    上传一张列车图片，使用 PaddleOCR 引擎识别车种和车号信息。
+
+    **返回数据：** type(空挡标记)、车种(vehicleType)、车号(vehicleNumber)、置信度(confidence)
+    """,
 )
 async def recognize_train_id(
-    service: TrainIDServiceDep,
-    request_id: RequestIdDep,
-    file: Annotated[UploadFile, File(description="Station-entry camera image")],
-) -> TrainIDResponse:
-    """Recognize vehicle type and number from a station-entry camera image."""
-    image_bytes = await file.read()
+    image: UploadFile = File(..., description="列车图片文件"),
+    cam_id: str | None = Form(None, description="摄像头标识（如 cam1/cam2/cam3/cam4），用于帧过滤降采样"),
+) -> TrainIDResponse | JSONResponse:
+    """Recognize train vehicle type and number from a single image."""
+    service = get_train_id_service_singleton()
+    endpoint = "/api/v1/train-id/recognize"
 
-    data = await service.recognize_image(image_bytes, file.filename or "unknown")
+    if not service.available:
+        return _get_error_response(
+            "Train ID engine not available",
+            status_code=503,
+            endpoint=endpoint,
+        )
 
-    response = TrainIDResponse.ok(data=data, message="Train ID recognized")
-    response.request_id = request_id
-    return response
+    try:
+        image_bytes = await image.read()
+        data = await service.recognize_image(image_bytes, image.filename, cam_id=cam_id)
+
+        return TrainIDResponse(
+            success=True,
+            message="Train ID recognized successfully",
+            data=data,
+        )
+
+    except Exception as e:
+        logger.error(f"Train ID recognition error: {e}")
+        return _get_error_response(str(e), endpoint=endpoint)
 
 
 @router.post(
     "/recognize/batch",
     response_model=TrainIDBatchResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Batch recognize train IDs",
-    description="""
-    Recognize vehicle type and number from multiple station-entry camera images.
-    """,
     responses={
-        200: {"description": "Batch recognition completed"},
-        400: {"description": "Invalid file format"},
+        200: {"description": "Batch processed successfully"},
+        400: {"description": "Invalid image format"},
+        422: {"description": "OCR processing failed"},
+        503: {"description": "Engine not available"},
     },
+    summary="批量识别列车图片（车种/车号）",
+    description="""
+    上传多张列车图片进行批量识别。
+
+    **返回数据：** 包含每张图片的识别结果列表
+    """,
 )
 async def recognize_train_id_batch(
-    service: TrainIDServiceDep,
-    request_id: RequestIdDep,
-    files: Annotated[list[UploadFile], File(description="Station-entry camera images")],
-) -> TrainIDBatchResponse:
-    """Batch recognize vehicle type and number from multiple images."""
-    images = []
-    for f in files:
-        content = await f.read()
-        images.append((content, f.filename or "unknown"))
+    images: list[UploadFile] = File(..., description="列车图片文件列表"),
+    cam_id: str | None = Form(None, description="摄像头标识，批量图片来自同一摄像头时启用帧过滤"),
+) -> TrainIDBatchResponse | JSONResponse:
+    """Recognize train IDs from multiple images."""
+    service = get_train_id_service_singleton()
+    endpoint = "/api/v1/train-id/recognize/batch"
 
-    results = await service.recognize_batch(images)
+    if not service.available:
+        return _get_error_response(
+            "Train ID engine not available",
+            status_code=503,
+            endpoint=endpoint,
+        )
 
-    response = TrainIDBatchResponse.ok(
-        data=results,
-        message=f"Processed {len(results)} images",
-    )
-    response.request_id = request_id
-    return response
+    try:
+        # 读取所有图片字节
+        image_tuples = [(await img.read(), img.filename) for img in images]
+        # 并行OCR（内部使用 asyncio.gather）
+        items = await service.recognize_batch(image_tuples, cam_id=cam_id)
+
+        return TrainIDBatchResponse(
+            success=True,
+            message=f"Processed {len(items)} images",
+            data=items,
+        )
+
+    except Exception as e:
+        logger.error(f"Batch recognition error: {e}")
+        return _get_error_response(str(e), endpoint=endpoint)
+
+
+@router.post(
+    "/recognize/flatcar",
+    response_model=FlatcarResponse,
+    responses={
+        200: {"description": "Flatcar recognized successfully"},
+        400: {"description": "Invalid image format"},
+        422: {"description": "OCR processing failed"},
+        503: {"description": "Engine not available"},
+    },
+    summary="识别单张板车图片（车型/车号）",
+    description="""
+    上传一张板车（车板号）图片，使用底部区域 OCR + 同行框拼接识别车型和车号。
+
+    **识别策略：**
+    - 底部区域（75%-100% 高度）：针对车板号喷涂位置优化
+    - 暗光预处理：LAB 空间 CLAHE 增强
+    - 同行框拼接：按 Y 坐标分行，同行内按 X 坐标排序合并
+
+    **返回数据：** 车型(vehicleType)、车号(vehicleNumber)、置信度(confidence)
+    """,
+)
+async def recognize_flatcar_image(
+    image: UploadFile = File(..., description="板车图片文件"),
+) -> FlatcarResponse | JSONResponse:
+    """Recognize flatcar type and number from a single image."""
+    service = get_train_id_service_singleton()
+    endpoint = "/api/v1/train-id/recognize/flatcar"
+
+    if not service.flatcar_available:
+        return _get_error_response(
+            "Flatcar engine not available",
+            status_code=503,
+            endpoint=endpoint,
+        )
+
+    try:
+        image_bytes = await image.read()
+        data = await service.recognize_flatcar_image(image_bytes, image.filename)
+
+        return FlatcarResponse(
+            success=True,
+            message="Flatcar recognized successfully",
+            data=data,
+        )
+
+    except Exception as e:
+        logger.error(f"Flatcar recognition error: {e}")
+        return _get_error_response(str(e), endpoint=endpoint)

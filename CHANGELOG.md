@@ -1,5 +1,236 @@
 # 更新日志
 
+## [0.10.6] - 2026-05-29
+
+### 功能
+- **89 种标准铁路货车车型白名单** — `train_id_ocr_paddle.py` 新增 `_CHINA_RAIL_VEHICLE_TYPES`
+  - 覆盖 C 系列（C50/C70E/C80 等）、P 系列、G 系列、X 系列、K 系列等 89 种标准车型
+  - 误识从 18 段非标准字符串降至 0 段
+  - 新增 `_is_vehicle_type_pattern()` 进行白名单精确匹配 + 近似匹配
+- **车型近似匹配** — 单字符删除修复，如 `C701E` → `C70E`
+  - 候选在白名单中时，允许删除一个字符修复常见漏框/误识
+- **空挡检测 v3 优化** — `flatcar_gap_detector.py` 增加车钩反光辅助特征
+  - 中央 45%-55% 窄带亮度比 > 1.55 且高亮像素 1.5%-8% → coupler_score=1.0
+  - `min_gap_score` 从 6 提至 7，误检从 172 帧(21.9%)降至 19 帧(2.4%)
+- **板车空挡模式** — `FlatcarGapDetector` 支持 `vehicle_type='flatcar'`
+  - 亮度/标准差/边缘阈值针对板车暗光场景重新校准
+  - 板车及格线 5 分 vs 标准模式 7 分
+- **GPU 自动检测** — `get_ocr_processor()` 默认自动检测 CUDA 可用性
+  - 内联 `_check_gpu_available()`，有 CUDA 则自动启用 GPU，无则回退 CPU
+  - CLI 新增 `--gpu`/`--cpu` 强制开关（互斥），默认不传时自动检测
+  - 解决现场 3060 有 GPU 但代码硬编码 CPU 导致的性能瓶颈
+- **全局单例缓存** — `get_ocr_processor()` 避免每次 API 调用重复初始化 PaddleOCR
+  - 首次初始化 ~0.8s，后续直接返回缓存实例
+  - 支持多配置共存（CPU/GPU × 增强模式），用配置字符串作为 key
+- **性能优化合并** — 将 `kimi/` 目录下的实验优化代码合并到生产代码
+  - 预处理：`enhance_contrast_s_curve` 用 LUT 替代逐像素 tanh；`preprocess_otsu_fusion` 从 8 步精简到 5 步（移除 LAB 转换链和 Unsharp Masking）
+  - 后处理：`merge_boxes_train` 数字框合并从 O(n³) 降到 O(n·L)；IOU 去重 n≥25 时向量化；`combinations` 限制 m>8 只查相邻对
+  - 工具函数：所有正则预编译为模块级常量，所有 `str.maketrans` 预计算，`is_train_param` 重排早返回逻辑
+  - 实测 30 帧 CPU 场景：795ms → 667ms/帧（-16%），识别结果 0 差异
+- **多进程并发 OCR（4摄像头场景）** — 新增 `PaddleOCRProcessPool` + `SmartFrameFilter`
+  - 4 个独立 OCR 工作进程（spawn 模式），每个有独立 PaddleOCR 实例，绕过 Python GIL
+  - 智能帧过滤：同一摄像头 150ms 内重复帧跳过，结果缓存 3 秒有效期
+  - API 层 `recognize_image()` 使用 `run_in_executor()` 异步包装，避免阻塞事件循环
+  - 批量接口 `recognize_batch()` 使用 `asyncio.gather()` 并行处理
+  - API 端点新增 `cam_id` 参数（可选），用于帧过滤标识
+  - 现场只需改一行：`get_ocr_processor(num_workers=4)`
+
+### 修复
+- **空挡检测硬编码** — `_process_img()` 取消 `is_gap=False` 硬编码，真正调用 `FlatcarGapDetector`
+  - 之前代码写了检测逻辑但从未执行，空挡帧仍走完整 OCR 浪费性能
+- **`is_train_param()` 误杀车型** — 移除宽泛的 `'t'` 关键词匹配
+  - 改为 `\d+t` 精确匹配（如 `70t`），避免 `CTOE` 等车型含 `T` 被误过滤为参数
+- **车型纠错增强** — `_fix_vehicle_type()` 新增 T→7、O→0 直接映射
+  - `CTOE` → `C70E`，命中白名单即返回，无需逐字符修复链
+- **标准车型补全** — 白名单新增 `C70EH`、`C70BH`
+
+### 重构
+- **`get_ocr_processor()` 签名** — `use_gpu: bool = False` → `use_gpu: Optional[bool] = None`
+  - `None` 表示自动检测，`True`/`False` 表示强制指定
+
+### 代码清理
+- 删除 `train_id_ocr/gap_detector_v2.py`（未使用的旧版空挡检测器）
+- 移除 `train_id_ocr_paddle.py` 中未使用的 `Counter` 导入
+- 更新 `.gitignore`
+
+### 文件变更
+- 修改 `train_id_ocr/train_id_ocr_paddle.py` — 白名单、近似匹配、车型纠错、空挡检测启用、GPU 自动检测、全局单例
+- 修改 `train_id_ocr/flatcar_gap_detector.py` — 车钩反光特征、板车空挡模式、阈值优化
+- 删除 `train_id_ocr/gap_detector_v2.py`
+
+## [0.10.5] - 2026-05-23
+
+### 修复
+- **信号灯检测阈值校准** — `Light_signal/signal_detect.py` 全面收紧 HSV 阈值，消除灰墙面/反光假阳性
+  - `white_mask`: `(sat < 100, val > 220)` → `(sat < 50, val > 230)`，消除无灯场景误判为 white
+  - `warm_red`: `sat > 70` → `sat > 80`，`val > 90` → `val > 150`，减少夕阳/车厢反光误报
+  - `cool_red`: `sat > 40` → `sat > 80`，`val > 60` → `val > 150`，避免白灯 Hue≈173 被误判为 red
+  - red 触发阈值: `≥ 10` → `≥ 25`，提高红色判定门槛
+  - `_find_blobs` max_area: `2000` → `30000`，保留大体积蓝色 LED blob（约 27,000 像素）
+- **Blue → White BGR 消歧** — 当 HSV 将白灯误判为 blue 时（Hue≈90-110 重叠区），检查 `signal_center` 附近 BGR 值
+  - 若 `peak_v > 200` 且 `abs(R-B) < 30`（白色 LED 近似中性灰），回退为 white
+  - 解决夜间/白天白灯被 blue mask 截获的问题
+- **Red → White BGR 消歧** — 当 HSV 将白灯误判为 red 时，检查 `signal_center` 附近
+  - 若 `peak_v > 200`、`mean_s < 50` 且 `(R-B) < -5`，回退为 white
+- **CONFIG_FILE 路径修复** — 从相对当前工作目录改为 `Path(__file__).parent / "signal_config.json"`，避免 CWD 不同时找不到配置
+- **UTF-8 编码显式声明** — `load_config()` / `save_config()` 添加 `encoding="utf-8"`，修复中文配置键读取异常
+- **DEFAULT_CONFIG 同步** — 将 `exit_signal` 和 `rear_signal` 的 ROI / `signal_center` 与 `signal_config.json` 保持一致
+  - `exit_signal`: ROI `[520, 330, 630, 400]` → `[230, 20, 330, 120]`，`signal_center` `[573, 370]` → `[266, 88]`
+  - `rear_signal`: ROI `[468, 228, 628, 388]` → `[400, 200, 640, 440]`，`signal_center` `[548, 308]` → `[550, 280]`
+
+### 文件变更
+- 修改 `Light_signal/signal_detect.py`
+- 新增 `Light_signal/signal_config.json`（未纳入 Git 跟踪）
+
+## [0.10.4] - 2026-05-21
+
+### 功能
+- **工业相机原始像素解码** — 新增 `decode_raw_image()` 支持海康 GigE Vision 原始 Bayer/Mono 数据
+  - `PixelType_Gvsp_BayerGB8`（单通道 8bit）→ OpenCV BGR
+  - `PixelType_Gvsp_Mono8` → `COLOR_GRAY2BGR`
+  - `PixelType_Gvsp_RGB8/BGR8` → BGR
+  - `RESOLUTION_BAYER_MAP` 根据分辨率自动选择正确 Bayer 模式：
+    - 2448×2048 → `COLOR_BayerRG2BGR`（115/117 摄像头）
+    - 4096×3000 → `COLOR_BayerGR2BGR`（116/118 摄像头）
+  - 解决海康 `BayerGB8` 与 OpenCV Bayer 常量命名不匹配问题（经 4 组实际数据验证）
+- **车厢号识别支持原始像素** — `PaddleOCRProcessor` 新增 `process_raw_bytes(image_bytes, pixel_type, width, height)`
+  - 与 `process_bytes()` 共用同一套 `_process_img()` OCR 逻辑
+  - 输出格式不变（`ImageResult` 结构完全一致）
+- **板车识别支持原始像素** — `FlatcarBottomProcessor` / `FlatcarImageProcessor` 新增 `process_raw_bytes()`
+  - 同样共用 `_process_img()` 底部区域 OCR 逻辑
+  - 输出格式不变
+- **板车空挡检测集成** — `FlatcarBottomProcessor` 初始化时加载 `FlatcarGapDetector`
+  - 空挡帧输出 `type: "########"`，正常帧输出 `type: ""`
+  - 与车厢号空挡检测输出格式统一
+  - 传统 CV 方案：中心 ROI + 亮度/边缘/方差/列极值差 8 特征评分
+  - 阈值经 1227 帧实际数据校准，暗光空挡不漏检，金属结构不误判
+- **Service 层新增 raw 入口** — `TrainIDService` 新增 `recognize_raw_image()` 供队列消费端调用
+  - 提取 `_build_train_id_data()` 公共方法，避免 `recognize_image` / `recognize_raw_image` 重复代码
+
+### 文件变更
+- 修改 `dms_api/app/train_id/utils.py` — 新增 `decode_raw_image()`、`RESOLUTION_BAYER_MAP`、海康像素格式常量
+- 修改 `dms_api/app/train_id/flatcar_image_processor.py` — 新增 `process_raw_bytes()`
+- 修改 `train_id_ocr/run_bottom_merge_ocr.py` — 集成 `FlatcarGapDetector`，新增 `process_raw_bytes()` + `_process_img()`
+- 修改 `train_id_ocr/train_id_ocr_paddle.py` — 新增 `process_raw_bytes()` + `_process_img()`
+- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_raw_image()` + `_build_train_id_data()`，`recognize_flatcar_image` 读取 `type`
+- 修改 `dms_api/app/schemas/train_id.py` — `FlatcarData` 新增 `type` 字段
+- 新增 `train_id_ocr/flatcar_gap_detector.py` — `FlatcarGapDetector` 板车空挡检测器（生产级传统 CV）
+
+## [0.10.3] - 2026-05-18
+
+### 功能
+- **API 返回集装箱箱号** — `/recognize` 和 `/recognize/batch` 响应新增 `container` 和 `containerConfidence` 字段
+  - 从 `PaddleOCRProcessor` 上半区识别结果中取置信度最高的集装箱箱号
+  - 无集装箱时返回空字符串 + 0.0 置信度
+  - 单图接口和批量接口同步支持
+
+### 修复
+- **批量接口字段丢失** — `/recognize/batch` 构造 `TrainIDBatchItem` 时漏传 `container` 和 `containerConfidence`，已补上
+
+### 文件变更
+- 修改 `dms_api/app/schemas/train_id.py` — `TrainIDData`/`TrainIDBatchItem` 新增 `container` + `containerConfidence`
+- 修改 `dms_api/app/services/train_id.py` — `recognize_image()` 提取最佳集装箱，`recognize_batch()` 透传
+- 修改 `dms_api/app/api/v1/train_id.py` — 批量接口补上 `container`/`containerConfidence` 字段
+
+## [0.10.2] - 2026-05-15
+
+### 重构
+- **API 与 CLI 统一** — `/recognize` 和 `/recognize/batch` 底层改为直接调用 `train_id_ocr_paddle.py` 的 `PaddleOCRProcessor`
+  - 删除独立的 `PaddleImageProcessor`（`dms_api/app/train_id/paddle_image_processor.py`）
+  - 保证 API 和 CLI 使用同一份核心识别代码，避免维护两套逻辑
+  - `train_id_ocr_paddle.py` 新增 `process_bytes(image_bytes)` 方法供 API 调用
+
+### 功能
+- **空挡检测** — `/recognize` 和 `/recognize/batch` 响应新增 `type` 字段
+  - `type: "########"` 表示空挡帧（车厢连接处）
+  - `type: ""` 表示正常帧
+  - 纯 CV 判断，不训练：中心 ROI + 四特征严格 AND（竖直边缘 + 低梯度 + 亮度 + 亮斑）
+  - 新增 `dms_api/app/train_id/gap_detector.py` — `GapDetector` 空挡检测器
+- **板车单图识别** — 新增 `POST /api/v1/train-id/recognize/flatcar` 端点
+  - 底层使用 `run_bottom_merge_ocr.py` 的 `FlatcarBottomProcessor`
+  - 底部区域（75%-100% 高度）+ LAB CLAHE 暗光增强 + 同行框拼接
+  - 车型纠错覆盖 X70/X6K/C70E/C80 等
+  - 车号优先取 7 位数字
+  - 输出：`vehicleType` + `vehicleNumber` + `confidence`
+- **GPU/CPU 自动兼容** — `PaddleOCRProcessor` 和 `FlatcarBottomProcessor` 默认尝试 GPU，失败自动回退 CPU
+  - 支持 RTX 3060 等 Ampere 架构显卡
+  - 无 CUDA 驱动或 GPU 初始化失败时无缝回退 CPU，不影响服务可用性
+
+### 删除
+- **移除 `/recognize/paddle` 端点** — 原集装箱+车种+车号独立接口，现由 `/recognize` 统一覆盖
+- **移除 `/recognize/flatcar` 旧端点** — 原基于 `flatcar_image_processor.py` 的实现，现由新的 `/recognize/flatcar` 替换
+- 删除 `train_id_ocr/batch_v6_flatcar.py`、`train_id_ocr/train_id_ocr_video_paddle_v5.py` 等旧文件
+
+### 文件变更
+- 修改 `train_id_ocr/train_id_ocr_paddle.py` — 新增 `process_bytes()`、GPU/CPU 自动切换
+- 修改 `train_id_ocr/run_bottom_merge_ocr.py` — 新增 `FlatcarBottomProcessor` 类、GPU/CPU 自动切换
+- 修改 `dms_api/app/api/v1/train_id.py` — 删除 `/recognize/paddle` 和旧 `/recognize/flatcar`，新增新的 `/recognize/flatcar`
+- 修改 `dms_api/app/services/train_id.py` — 改为调用 `PaddleOCRProcessor` 和 `FlatcarBottomProcessor`
+- 修改 `dms_api/app/schemas/train_id.py` — 删除 `PaddleImageData`/`FlatcarImageData`，新增 `FlatcarData`
+- 修改 `dms_api/app/schemas/__init__.py` — 同步导出
+- 新增 `dms_api/app/train_id/gap_detector.py` — 空挡检测器
+- 新增 `train_id_ocr/train_id_ocr_paddle_backup.py` — 空挡检测集成前的原始备份
+
+## [0.10.1] - 2026-05-14
+### 功能
+- **单图 PaddleOCR 识别** — `POST /api/v1/train-id/recognize/paddle` 单图识别端点
+  - 基于 `train_id_ocr_video_paddle_v6.py` 改造为单图版 `train_id_ocr_paddle.py`
+  - 复用 `PaddleOCREngine` 单例（`lang='en'`），GPU/CPU 自动切换
+  - 上下分区策略：上半区（约55%）识别集装箱箱号，下半区识别铁路货车车种/车号
+  - 输出：集装箱列表 + 车种列表 + 车号列表（简洁字符串列表，无置信度）
+- **单图板车识别** — `POST /api/v1/train-id/recognize/flatcar` 板车单图识别端点
+  - 基于 `flatcar_processor.py` 改造为单图版 `flatcar_image_processor.py`
+  - 底部区域提取（75%-100% 高度），暗光预处理（LAB 空间 CLAHE）
+  - 中文 PaddleOCR（`lang='ch'`），同行框拼接解决长数字串拆框问题
+  - 车型纠错映射：`FLATCAR_CORRECTION` 覆盖 X70/X6K/C70E/C80 等
+  - 输出：车型列表 + 车号列表（简洁字符串列表，无置信度）
+- **视频接口下线（代码保留）** — `/recognize/video` 和 `/recognize/flatcar-video` 端点已注释移除
+  - 视频相关处理代码保留在 `video_processor.py`、`flatcar_processor.py` 中（注释状态）
+  - 日后如需恢复可直接取消注释
+
+### 文件变更
+- 新增 `train_id_ocr/train_id_ocr_paddle.py` — 单图版 PaddleOCR CLI 工具（视频代码注释保留）
+- 新增 `dms_api/app/train_id/paddle_image_processor.py` — `PaddleImageProcessor` 单图处理核心
+- 新增 `dms_api/app/train_id/flatcar_image_processor.py` — `FlatcarImageProcessor` 单图处理核心
+- 修改 `dms_api/app/api/v1/train_id.py` — 新增 `/recognize/paddle` 和 `/recognize/flatcar`，注释移除 `/recognize/video` 和 `/recognize/flatcar-video`
+- 修改 `dms_api/app/schemas/train_id.py` — 新增 `PaddleImageData`、`PaddleImageResponse`、`FlatcarImageData`、`FlatcarImageResponse`，注释移除视频相关 schema
+- 修改 `dms_api/app/schemas/__init__.py` — 导出新增 schema
+- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_paddle_image()`、`recognize_flatcar_image()`，注释移除视频相关方法
+- 修改 `dms_api/app/train_id/__init__.py` — 导出 `PaddleImageProcessor`、`FlatcarImageProcessor`
+- 修改 `dms_api/app/train_id/video_engine.py` — 新增 `ocr(img, cls=True)` 支持 numpy array 直接输入
+
+## [0.10.0] - 2026-05-14
+### 功能
+- **视频车号识别** — `POST /api/v1/train-id/recognize/video` 视频识别端点
+  - 基于 `train_id_ocr_video_paddle_v6.py` 改造集成到 dms_api
+  - PaddleOCR 引擎（英文模型），GPU/CPU 自动切换
+  - 上下分区策略：上半区识别集装箱箱号，下半区识别铁路货车车种/车号
+  - 时序聚合：跨帧去重、碎片拼接、重叠合并
+  - 参数：`interval_sec`（抽帧间隔，默认 0.5s）、`gap_sec`（聚合间隔，默认 3.0s）
+  - 输出：集装箱列表 + 车种列表 + 车号列表（三套独立时序序列）
+- **车板号视频识别** — `POST /api/v1/train-id/recognize/flatcar-video` 车板号识别端点
+  - 基于 `run_bottom_merge_ocr.py` 改造集成到 dms_api
+  - 底部 75%-100% 区域 ROI 裁剪，针对车板号喷涂位置优化
+  - 中文 PaddleOCR（`lang='ch'`），支持中文车型字符识别
+  - 同行框拼接：按 Y 坐标分行，同行内按 X 坐标排序合并，解决长数字串拆框问题
+  - 车型纠错映射：`FLATCAR_CORRECTION` 覆盖 X70/X6K/C70E/C80 等常见车板型号
+  - 车号重叠拼接：跨帧 2-3 框重叠合并，目标 7 位数字
+  - 车种-车号时间窗口配对：按 `start_sec`~`end_sec` 重叠度匹配
+  - 输出：`results` 数组，每条包含 `type`（车型）、`number`（车号）、`frames`、`avgConf`
+- **PaddleOCR 引擎多语言支持** — `video_engine.py` 单例按 `(lang, use_gpu)` 组合缓存
+  - `lang='en'`：集装箱/货车识别（英文数字+字母）
+  - `lang='ch'`：车板号识别（中文字符+数字）
+
+### 文件变更
+- 新增 `dms_api/app/train_id/video_engine.py` — `PaddleOCREngine` 单例，支持 en/ch 双语言
+- 新增 `dms_api/app/train_id/video_processor.py` — `VideoTrainIDProcessor`，集装箱+货车视频处理核心
+- 新增 `dms_api/app/train_id/flatcar_processor.py` — `FlatcarVideoProcessor`，车板号视频处理核心
+- 修改 `dms_api/app/api/v1/train_id.py` — 新增 `/recognize/video` 和 `/recognize/flatcar-video` 端点
+- 修改 `dms_api/app/schemas/train_id.py` — 新增 `VideoTrainIDData`、`VideoTrainIDResponse`、`FlatcarVideoData`、`FlatcarVideoResponse`、`FlatcarItem`
+- 修改 `dms_api/app/services/train_id.py` — 新增 `recognize_video()`、`recognize_flatcar_video()`、`get_video_processor()`、`get_flatcar_processor()`
+- 修改 `dms_api/app/train_id/__init__.py` — 导出 `PaddleOCREngine`、`VideoTrainIDProcessor`、`VideoRecognitionResult`、`FlatcarVideoProcessor`、`FlatcarRecognitionResult`
+- 修改 `dms_api/requirements.txt` — 新增 `paddlepaddle>=2.5.0`、`paddleocr>=2.7.0`
+
 ## [0.9.2] - 2026-04-26
 ### 功能
 - **递归扫描子目录** — `signal_detect.py` 默认递归扫描所有包含媒体文件的目录
@@ -45,7 +276,7 @@
     - Pass 2：滑动窗口分块（640px 瓦片，30% 重叠），捕获小目标/边缘目标
   - **安全装备颜色验证** — 分块检测后通过 HSV 色彩分析过滤误检：
     - 橙色安全帽：H=5-22, S>100, V>100
-    - 荧光背心：H=25-85, S>60, V>80
+    - 荧光背心：H=25-85, S>60, V=80
     - 阈值 100 像素完美分离真检测（最低 103）与误检（最高 93）
   - 40 张测试图片准确率 **100%**（20 张异常 + 20 张正常）
   - GPU 推理支持：API 层 `use_gpu` 参数 + 配置 `DMS_PEDESTRIAN_DETECTION_USE_GPU`

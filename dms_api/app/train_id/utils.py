@@ -5,6 +5,7 @@ Image preprocessing, OCR text correction, noise filtering,
 and line grouping helpers for train ID recognition.
 """
 
+import logging
 import re
 from typing import List, Optional
 
@@ -12,6 +13,8 @@ import cv2
 import numpy as np
 
 from .models import OCRBox, TrainIDResult
+
+logger = logging.getLogger(__name__)
 
 RESIZE_SCALE = 0.25
 
@@ -58,9 +61,104 @@ _DIGIT_CONFUSABLE = set("OoQDIilSsAaGgTBbZz")
 # ---------------------------------------------------------------------------
 
 def decode_image_bytes(image_bytes: bytes) -> Optional[np.ndarray]:
-    """Decode image bytes to BGR numpy array."""
+    """Decode image bytes to BGR numpy array (JPEG/PNG/BMP etc)."""
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+# 海康工业相机常用像素格式常量
+PixelType_Gvsp_Mono8 = 0x01080001
+PixelType_Gvsp_BayerGR8 = 0x01080002
+PixelType_Gvsp_BayerRG8 = 0x01080009
+PixelType_Gvsp_BayerGB8 = 0x0108000A
+PixelType_Gvsp_BayerBG8 = 0x0108000B
+PixelType_Gvsp_BayerRG16 = 0x0110000B
+PixelType_Gvsp_RGB8 = 0x02180014
+PixelType_Gvsp_BGR8 = 0x02180015
+PixelType_Gvsp_YUV422_Packed = 0x0210001F
+PixelType_Gvsp_YUV422_YUYV_Packed = 0x02100032
+
+_BAYER_CV_MAP = {
+    PixelType_Gvsp_BayerGR8: cv2.COLOR_BayerGR2BGR,
+    PixelType_Gvsp_BayerRG8: cv2.COLOR_BayerRG2BGR,
+    PixelType_Gvsp_BayerGB8: cv2.COLOR_BayerGB2BGR,
+    PixelType_Gvsp_BayerBG8: cv2.COLOR_BayerBG2BGR,
+}
+
+# 根据实际测试数据校准：
+# 海康 BayerGB8 在不同分辨率/摄像头下，需要不同的 OpenCV Bayer 模式
+# key = (width, height), value = cv2.COLOR_BayerXX2BGR
+RESOLUTION_BAYER_MAP = {
+    (2448, 2048): cv2.COLOR_BayerRG2BGR,   # 115, 117
+    (4096, 3000): cv2.COLOR_BayerGR2BGR,   # 116, 118
+}
+
+
+def decode_raw_image(
+    image_bytes: bytes,
+    pixel_type: int,
+    width: int,
+    height: int,
+    bayer_cv_code: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    """Decode raw industrial camera pixel data to BGR numpy array.
+
+    Supports Hikrobot/GigE Vision raw formats (Mono8, Bayer8, RGB8, etc.).
+
+    Args:
+        image_bytes: Raw pixel data bytes.
+        pixel_type: GigE Vision pixel format code (e.g. PixelType_Gvsp_BayerGB8).
+        width: Image width in pixels.
+        height: Image height in pixels.
+        bayer_cv_code: Optional OpenCV Bayer conversion code. If None,
+            will auto-resolve from RESOLUTION_BAYER_MAP for BayerGB8.
+    """
+    if pixel_type == PixelType_Gvsp_Mono8:
+        expected = width * height
+        if len(image_bytes) != expected:
+            logger.warning(
+                f"Mono8 size mismatch: expected {expected}, got {len(image_bytes)}"
+            )
+        gray = np.frombuffer(image_bytes, dtype=np.uint8).reshape(height, width)
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+    if pixel_type in _BAYER_CV_MAP:
+        expected = width * height
+        if len(image_bytes) != expected:
+            logger.warning(
+                f"Bayer8 size mismatch: expected {expected}, got {len(image_bytes)}"
+            )
+        bayer = np.frombuffer(image_bytes, dtype=np.uint8).reshape(height, width)
+
+        if bayer_cv_code is not None:
+            cv_code = bayer_cv_code
+        elif pixel_type == PixelType_Gvsp_BayerGB8 and (width, height) in RESOLUTION_BAYER_MAP:
+            cv_code = RESOLUTION_BAYER_MAP[(width, height)]
+            logger.debug(f"Auto-selected Bayer code {cv_code} for {width}x{height}")
+        else:
+            cv_code = _BAYER_CV_MAP[pixel_type]
+
+        return cv2.cvtColor(bayer, cv_code)
+
+    if pixel_type == PixelType_Gvsp_BGR8:
+        expected = width * height * 3
+        if len(image_bytes) != expected:
+            logger.warning(
+                f"BGR8 size mismatch: expected {expected}, got {len(image_bytes)}"
+            )
+        return np.frombuffer(image_bytes, dtype=np.uint8).reshape(height, width, 3)
+
+    if pixel_type == PixelType_Gvsp_RGB8:
+        expected = width * height * 3
+        if len(image_bytes) != expected:
+            logger.warning(
+                f"RGB8 size mismatch: expected {expected}, got {len(image_bytes)}"
+            )
+        rgb = np.frombuffer(image_bytes, dtype=np.uint8).reshape(height, width, 3)
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    logger.error(f"Unsupported pixel type: 0x{pixel_type:08X}")
+    return None
 
 
 def resize(img: np.ndarray, scale: float = RESIZE_SCALE) -> np.ndarray:

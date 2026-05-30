@@ -1,0 +1,72 @@
+{
+  "拨车机前侧信号灯识别": {
+    "roi": [
+      710,
+      255,
+      840,
+      370
+    ],
+    "description": "Front-side signal at track switch point"
+  },
+  "front_signal": {
+    "roi": [
+      710,
+      255,
+      840,
+      370
+    ],
+    "description": "Front-side signal alias"
+  },
+  "拨车机后侧信号灯": {
+    "roi": [
+      400,
+      200,
+      640,
+      440
+    ],
+    "signal_center": [
+      550,
+      280
+    ],
+    "description": "Rear-side signal 240x240 centered on white LED"
+  },
+  "rear_signal": {
+    "roi": [
+      400,
+      200,
+      640,
+      440
+    ],
+    "signal_center": [
+      550,
+      280
+    ],
+    "description": "Rear-side signal alias"
+  },
+  "装车楼出口信号灯": {
+    "roi": [
+      230,
+      20,
+      330,
+      120
+    ],
+    "signal_center": [
+      266,
+      88
+    ],
+    "description": "Loading exit signal upper-left"
+  },
+  "exit_signal": {
+    "roi": [
+      230,
+      20,
+      330,
+      120
+    ],
+    "signal_center": [
+      266,
+      88
+    ],
+    "description": "Loading exit signal alias"
+  }
+}

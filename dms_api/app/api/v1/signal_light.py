@@ -4,7 +4,7 @@ Signal Light Detection API Endpoints
 Batch endpoint for railway signal light color recognition (信号灯颜色识别).
 """
 
-from fastapi import APIRouter, UploadFile, File, status
+from fastapi import APIRouter, UploadFile, File, status, Form
 from typing import Annotated
 
 from ...dependencies import SignalLightServiceDep, RequestIdDep
@@ -21,8 +21,8 @@ router = APIRouter(prefix="/signal-light", tags=["Signal Light Detection"])
     description="""
     Detect signal light color (红色/白色/蓝色) from surveillance camera images.
 
-    Uses pure computer vision (HSV + scene analysis) — no ML models.
-    Auto-detects signal color without requiring region coordinates.
+    Uses pure computer vision (HSV + blob analysis) — no ML models.
+    Supports ROI-based detection for fixed cameras.
 
     Supported formats: JPEG, PNG, BMP
     """,
@@ -35,6 +35,7 @@ async def detect_signal_light_batch(
     service: SignalLightServiceDep,
     request_id: RequestIdDep,
     files: Annotated[list[UploadFile], File(description="Surveillance camera images")],
+    camera_type: Annotated[str | None, Form(description="Camera identifier: front_signal / rear_signal / exit_signal")] = None,
 ) -> SignalLightBatchResponse:
     """Batch detect signal light colors from surveillance camera images."""
     images = []
@@ -42,7 +43,7 @@ async def detect_signal_light_batch(
         content = await f.read()
         images.append((content, f.filename or "unknown"))
 
-    results = await service.detect_batch(images)
+    results = await service.detect_batch(images, camera_type)
 
     response = SignalLightBatchResponse.ok(
         data=results,
